@@ -59,12 +59,12 @@ Core (`LendingPool`) делаем **upgradeable через proxy** (выбран
 ## Диаграмма (v0)
 ```mermaid
 flowchart LR
-  User((Borrower/Lender)) -->|deposit/borrow/repay| Pool[LendingPool (Proxy + Impl)]
+  User((Borrower / Lender)) -->|deposit, borrow, repay| Pool[LendingPool<br/>Proxy + Impl]
   Pool --> Risk[IRiskEngine]
   Pool --> Interest[IInterestModel]
   Risk --> Score[CreditScoreSBT]
   Risk --> Badge[DefaultBadgeSBT]
-  Risk -.optional.-> Oracle[IPriceOracle]
-  Risk -.optional.-> ID[IIdentityVerifier (ZK/KYC)]
-  Pool -->|mint/update| Score
+  Risk -. optional .-> Oracle[IPriceOracle]
+  Risk -. optional .-> ID[IIdentityVerifier<br/>ZK or KYC]
+  Pool -->|mint / update| Score
   Pool -->|mint| Badge

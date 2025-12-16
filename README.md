@@ -1,66 +1,25 @@
-## Foundry
+# Undercollateralized Lending DeSoSoc
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+## Что это
+Учебный прототип lending-протокола на Solidity (with Foundry), который:
+- начинает с **overcollateralized** займов,
+- постепенно снижает требования к залогу на основе **репутации**,
+- поддерживает “чёрную метку” дефолтера,
+- построен модульно, чтобы позже подключать **оракулы**, **новые метрики** и **ZK/KYC**.
 
-Foundry consists of:
+## Основная идея
+Репутация накапливается через успешные погашения. По мере роста `score` (через SBT) протокол снижает collateral ratio и повышает доступный лимит.
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+При дефолте адрес получает `DefaultBadge` (SBT), после чего политика по умолчанию запрещает новые займы.
 
-## Documentation
+## Архитектура (high-level)
+- `LendingPool` — core, хранит займы и исполняет операции
+- `RiskEngine` — политика доступа/залога (легко заменить)
+- `InterestModel` — модель начисления долга (легко заменить)
+- `CreditScoreSBT` — soulbound “кредитный скор”
+- `DefaultBadgeSBT` — soulbound “дефолтер”
+- опционально: `PriceOracle` и `IdentityVerifier`
 
-https://book.getfoundry.sh/
-
-## Usage
-
-### Build
-
-```shell
-$ forge build
-```
-
-### Test
-
-```shell
-$ forge test
-```
-
-### Format
-
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+## Документация
+- [`docs/ADR.md`](docs/ADR.md) — принятые архитектурные решения
+- [`docs/HOW_TO.md`](docs/HOW_TO.md) — окружение, тесты, деплой, верификация

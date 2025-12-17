@@ -78,10 +78,7 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
         address badgeSbt_,
         address interestModel_,
         address treasury_
-    )
-        external
-        initializer
-    {
+    ) external initializer {
         if (
             owner_ == address(0) || token_ == address(0) || riskEngine_ == address(0) || scoreSbt_ == address(0)
                 || badgeSbt_ == address(0) || interestModel_ == address(0) || treasury_ == address(0)

@@ -38,7 +38,15 @@ contract LendingPoolTest is Test {
         LendingPool impl = new LendingPool();
         bytes memory initData = abi.encodeCall(
             LendingPool.initialize,
-            (admin, address(token), address(riskEngine), address(scoreSbt), address(badgeSbt), address(interestModel), treasury)
+            (
+                admin,
+                address(token),
+                address(riskEngine),
+                address(scoreSbt),
+                address(badgeSbt),
+                address(interestModel),
+                treasury
+            )
         );
         ERC1967Proxy proxy = new ERC1967Proxy(address(impl), initData);
         pool = LendingPool(address(proxy));

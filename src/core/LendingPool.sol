@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.20;
 
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -14,6 +13,7 @@ import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/Pau
 
 import {LendingPoolStorage} from "./LendingPoolStorage.sol";
 import {Errors} from "../utils/Errors.sol";
+import {ReentrancyGuardUpgradeable} from "../utils/ReentrancyGuardUpgradeable.sol";
 import {Types} from "../utils/Types.sol";
 import {IInterestModel} from "../interfaces/IInterestModel.sol";
 import {IReputationHook} from "../interfaces/IReputationHook.sol";
@@ -26,7 +26,7 @@ contract LendingPool is
     UUPSUpgradeable,
     AccessControlUpgradeable,
     PausableUpgradeable,
-    ReentrancyGuard,
+    ReentrancyGuardUpgradeable,
     LendingPoolStorage
 {
     using SafeERC20 for IERC20;
@@ -91,6 +91,8 @@ contract LendingPool is
 
         __AccessControl_init();
         __Pausable_init();
+        __ReentrancyGuard_init();
+        __UUPSUpgradeable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(UPGRADER_ROLE, admin);
@@ -104,6 +106,9 @@ contract LendingPool is
 
         nextLoanId = 1;
     }
+
+    /// @dev OZ v5.x UUPSUpgradeable is stateless and has no initializer. This no-op keeps a consistent init pattern.
+    function __UUPSUpgradeable_init() internal onlyInitializing {}
 
     /// @notice Updates fee configuration.
     /// @dev Only callable by `DEFAULT_ADMIN_ROLE`.

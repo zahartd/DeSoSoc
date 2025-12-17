@@ -9,8 +9,9 @@ import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
 import {LendingPool} from "../src/core/LendingPool.sol";
 import {Types} from "../src/utils/Types.sol";
 import {InterestModelLinear} from "../src/modules/InterestModelLinear.sol";
+import {PriceOracleMock} from "../src/modules/PriceOracleMock.sol";
 import {ReputationHookMock} from "../src/modules/ReputationHookMock.sol";
-import {RiskEngineSimple} from "../src/modules/RiskEngineSimple.sol";
+import {RiskEngine} from "../src/modules/RiskEngine.sol";
 
 contract LendingPoolSkeletonTest is Test {
     LendingPool internal pool;
@@ -18,9 +19,10 @@ contract LendingPoolSkeletonTest is Test {
     ERC20Mock internal asset;
     ERC20Mock internal collateral;
 
-    RiskEngineSimple internal riskEngine;
+    RiskEngine internal riskEngine;
     InterestModelLinear internal interestModel;
     ReputationHookMock internal hook;
+    PriceOracleMock internal oracle;
 
     address internal admin = address(this);
     address internal treasury = address(0xBEEF);
@@ -32,7 +34,10 @@ contract LendingPoolSkeletonTest is Test {
         asset = new ERC20Mock();
         collateral = new ERC20Mock();
 
-        riskEngine = new RiskEngineSimple(address(this), address(0), address(0), address(0), address(0));
+        oracle = new PriceOracleMock(address(this));
+        oracle.setPrice(address(collateral), address(asset), 1e18, 18);
+
+        riskEngine = new RiskEngine(address(this), address(0), address(0), address(0), address(oracle));
         interestModel = new InterestModelLinear(0, 0);
         hook = new ReputationHookMock(address(this));
 
@@ -69,8 +74,7 @@ contract LendingPoolSkeletonTest is Test {
     }
 
     function test_setModules_accessControl() public {
-        RiskEngineSimple newRiskEngine =
-            new RiskEngineSimple(address(this), address(0), address(0), address(0), address(0));
+        RiskEngine newRiskEngine = new RiskEngine(address(this), address(0), address(0), address(0), address(0));
         InterestModelLinear newInterestModel = new InterestModelLinear(0, 0);
         ReputationHookMock newHook = new ReputationHookMock(address(this));
 
@@ -123,8 +127,8 @@ contract LendingPoolSkeletonTest is Test {
         Types.BorrowRequest memory req = Types.BorrowRequest({
             asset: address(asset),
             amount: 100 ether,
-            collateralAsset: address(0),
-            collateralAmount: 0,
+            collateralAsset: address(collateral),
+            collateralAmount: 150 ether,
             duration: 3 days,
             proof: hex""
         });
@@ -148,8 +152,8 @@ contract LendingPoolSkeletonTest is Test {
         Types.BorrowRequest memory req = Types.BorrowRequest({
             asset: address(asset),
             amount: 100 ether,
-            collateralAsset: address(0),
-            collateralAmount: 0,
+            collateralAsset: address(collateral),
+            collateralAmount: 150 ether,
             duration: 30 days,
             proof: hex""
         });

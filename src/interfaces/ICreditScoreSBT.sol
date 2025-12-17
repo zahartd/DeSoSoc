@@ -15,10 +15,12 @@ interface ICreditScoreSBT {
 
     /// @notice Mints a token for `user` if missing.
     /// @param user Target user.
-    /// @param initialScore Initial score to set on mint.
     /// @return tokenId Minted (or existing) token id.
-    function mintIfNeeded(address user, uint16 initialScore) external returns (uint256 tokenId);
+    function mintIfNeeded(address user) external returns (uint256 tokenId);
 
     /// @notice Updates score for `user`.
     function setScore(address user, uint16 newScore) external;
+
+    /// @notice Returns the token ID owned by a user (0 if none).
+    function tokenIdOf(address user) external view returns (uint256);
 }

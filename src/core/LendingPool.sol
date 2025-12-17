@@ -4,361 +4,277 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
-import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 
-import {LendingPoolStorage} from "./LendingPoolStorage.sol";
-import {Errors} from "../utils/Errors.sol";
-import {ReentrancyGuardUpgradeable} from "../utils/ReentrancyGuardUpgradeable.sol";
-import {Types} from "../utils/Types.sol";
+import {IBlackBadgeSBT} from "../interfaces/IBlackBadgeSBT.sol";
+import {ICreditScoreSBT} from "../interfaces/ICreditScoreSBT.sol";
 import {IInterestModel} from "../interfaces/IInterestModel.sol";
-import {IReputationHook} from "../interfaces/IReputationHook.sol";
 import {IRiskEngine} from "../interfaces/IRiskEngine.sol";
+import {Errors} from "../utils/Errors.sol";
 
 /// @title LendingPool
-/// @notice Upgradeable core contract that stores loans and delegates policy to modules.
-contract LendingPool is
-    Initializable,
-    UUPSUpgradeable,
-    AccessControlUpgradeable,
-    PausableUpgradeable,
-    ReentrancyGuardUpgradeable,
-    LendingPoolStorage
-{
+/// @notice Minimal undercollateralized lending prototype (single ERC20 + modules + UUPS proxy).
+contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, PausableUpgradeable {
     using SafeERC20 for IERC20;
-    using SafeCast for uint256;
 
-    uint256 internal constant BPS = 10_000;
+    uint16 internal constant BPS = 10_000;
+    uint16 internal constant SCORE_FREE = 800;
 
-    /// @notice Role allowed to authorize upgrades.
-    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    IERC20 public token;
+    IRiskEngine public riskEngine;
+    ICreditScoreSBT public scoreSbt;
+    IBlackBadgeSBT public badgeSbt;
+    IInterestModel public interestModel;
 
-    /// @notice Role allowed to update risk/interest modules.
-    bytes32 public constant RISK_ADMIN_ROLE = keccak256("RISK_ADMIN_ROLE");
+    uint16 public scoreIncrement;
+    uint16 public protocolFeeBps;
+    uint16 public originationFeeBps;
+    address public treasury;
 
-    /// @notice Role allowed to pause/unpause the protocol.
-    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    uint256 public lockedCollateral;
 
-    /// @notice Emitted when risk/interest modules are updated.
-    event ModulesUpdated(address riskEngine, address interestModel);
+    struct Loan {
+        uint256 principal;
+        uint256 collateral;
+        uint256 repaid;
+        uint64 start;
+        uint64 due;
+        bool active;
+    }
 
-    /// @notice Emitted when reputation hook is updated.
-    event ReputationHookUpdated(address reputationHook);
+    mapping(address borrower => Loan loan) public loanOf;
 
-    /// @notice Emitted when treasury address is updated.
-    event TreasuryUpdated(address treasury);
+    bool private locked;
 
-    /// @notice Emitted when a loan is opened.
-    event LoanOpened(uint256 indexed loanId, address indexed borrower, address asset, uint256 amount, uint64 dueTs);
+    modifier nonReentrant() {
+        if (locked) revert Errors.Reentrancy();
+        locked = true;
+        _;
+        locked = false;
+    }
 
-    /// @notice Emitted when a loan is repaid (partially or fully).
-    event LoanRepaid(uint256 indexed loanId, address indexed borrower, uint256 paidAmount, uint256 totalRepaid);
-
-    /// @notice Emitted when a loan is marked as defaulted.
-    event LoanDefaulted(uint256 indexed loanId, address indexed borrower);
-
-    /// @notice Emitted when protocol fee settings are updated.
-    event FeesUpdated(uint16 protocolFeeBps, uint16 originationFeeBps);
-
-    /// @notice Emitted when liquidity is deposited into the pool.
-    event LiquidityDeposited(address indexed asset, address indexed from, uint256 amount);
-
-    /// @notice Emitted when liquidity is withdrawn from the pool.
-    event LiquidityWithdrawn(address indexed asset, address indexed to, uint256 amount);
+    event LiquidityDeposited(address indexed from, uint256 amount);
+    event LiquidityWithdrawn(address indexed to, uint256 amount);
+    event Borrowed(address indexed borrower, uint256 principal, uint256 collateral, uint64 dueTs, uint256 fee);
+    event Repaid(address indexed borrower, uint256 paid, uint256 totalRepaid, uint256 totalDebt, bool fullyRepaid);
+    event Defaulted(address indexed borrower);
+    event RiskEngineUpdated(address riskEngine);
+    event InterestModelUpdated(address interestModel);
+    event FeesUpdated(uint16 protocolFeeBps, uint16 originationFeeBps, address treasury);
 
     constructor() {
         _disableInitializers();
     }
 
-    /// @notice Initializes the contract (proxy initializer).
-    /// @param admin Default admin (also receives upgrader/risk-admin/pauser roles).
-    /// @param riskEngine_ Risk engine module address.
-    /// @param interestModel_ Interest model module address.
-    /// @param reputationHook_ Reputation hook module address.
-    /// @param treasury_ Treasury address placeholder.
     function initialize(
-        address admin,
+        address owner_,
+        address token_,
         address riskEngine_,
+        address scoreSbt_,
+        address badgeSbt_,
         address interestModel_,
-        address reputationHook_,
         address treasury_
     ) external initializer {
-        if (admin == address(0)) revert Errors.InvalidAddress();
+        if (
+            owner_ == address(0) || token_ == address(0) || riskEngine_ == address(0) || scoreSbt_ == address(0)
+                || badgeSbt_ == address(0) || interestModel_ == address(0) || treasury_ == address(0)
+        ) revert Errors.InvalidAddress();
 
-        __AccessControl_init();
+        __Ownable_init(owner_);
         __Pausable_init();
-        __ReentrancyGuard_init();
-        __UUPSUpgradeable_init();
 
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(UPGRADER_ROLE, admin);
-        _grantRole(RISK_ADMIN_ROLE, admin);
-        _grantRole(PAUSER_ROLE, admin);
+        token = IERC20(token_);
+        riskEngine = IRiskEngine(riskEngine_);
+        scoreSbt = ICreditScoreSBT(scoreSbt_);
+        badgeSbt = IBlackBadgeSBT(badgeSbt_);
+        interestModel = IInterestModel(interestModel_);
 
-        _setRiskEngine(riskEngine_);
-        _setInterestModel(interestModel_);
-        _setReputationHook(reputationHook_);
-        _setTreasury(treasury_);
+        scoreIncrement = 250; // v0 example
+        treasury = treasury_;
 
-        nextLoanId = 1;
+        protocolFeeBps = 1000; // 10% of interest
+        originationFeeBps = 100; // 1% of principal
+
+        emit RiskEngineUpdated(riskEngine_);
+        emit InterestModelUpdated(interestModel_);
+        emit FeesUpdated(protocolFeeBps, originationFeeBps, treasury_);
     }
 
-    /// @dev OZ v5.x UUPSUpgradeable is stateless and has no initializer. This no-op keeps a consistent init pattern.
-    function __UUPSUpgradeable_init() internal onlyInitializing {}
+    function setRiskEngine(address newRiskEngine) external onlyOwner {
+        if (newRiskEngine == address(0)) revert Errors.InvalidAddress();
+        riskEngine = IRiskEngine(newRiskEngine);
+        emit RiskEngineUpdated(newRiskEngine);
+    }
 
-    /// @notice Updates fee configuration.
-    /// @dev Only callable by `DEFAULT_ADMIN_ROLE`.
-    /// @param newProtocolFeeBps Fee (bps) taken from accrued interest on full repay.
-    /// @param newOriginationFeeBps Fee (bps) charged on borrow (taken from borrowed asset).
-    function setFees(uint16 newProtocolFeeBps, uint16 newOriginationFeeBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (newProtocolFeeBps > BPS || newOriginationFeeBps > BPS) revert Errors.InvalidAmount();
+    function setInterestModel(address newInterestModel) external onlyOwner {
+        if (newInterestModel == address(0)) revert Errors.InvalidAddress();
+        interestModel = IInterestModel(newInterestModel);
+        emit InterestModelUpdated(newInterestModel);
+    }
+
+    function setScoreIncrement(uint16 newScoreIncrement) external onlyOwner {
+        scoreIncrement = newScoreIncrement;
+    }
+
+    function setFees(uint16 newProtocolFeeBps, uint16 newOriginationFeeBps, address newTreasury) external onlyOwner {
+        if (newProtocolFeeBps > BPS || newOriginationFeeBps > BPS) revert Errors.InvalidBps();
+        if (newTreasury == address(0)) revert Errors.InvalidAddress();
 
         protocolFeeBps = newProtocolFeeBps;
         originationFeeBps = newOriginationFeeBps;
+        treasury = newTreasury;
 
-        emit FeesUpdated(newProtocolFeeBps, newOriginationFeeBps);
+        emit FeesUpdated(newProtocolFeeBps, newOriginationFeeBps, newTreasury);
     }
 
-    /// @notice Deposits ERC20 liquidity into the pool.
-    /// @dev Only callable by `DEFAULT_ADMIN_ROLE` in v0.
-    function depositLiquidity(address asset, uint256 amount)
-        external
-        whenNotPaused
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        if (asset == address(0)) revert Errors.InvalidAddress();
-        if (amount == 0) revert Errors.InvalidAmount();
-
-        IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
-        emit LiquidityDeposited(asset, msg.sender, amount);
-    }
-
-    /// @notice Withdraws ERC20 liquidity from the pool.
-    /// @dev Only callable by `DEFAULT_ADMIN_ROLE` in v0.
-    function withdrawLiquidity(address asset, uint256 amount, address to)
-        external
-        whenNotPaused
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        if (asset == address(0) || to == address(0)) revert Errors.InvalidAddress();
-        if (amount == 0) revert Errors.InvalidAmount();
-
-        IERC20(asset).safeTransfer(to, amount);
-        emit LiquidityWithdrawn(asset, to, amount);
-    }
-
-    /// @notice Sets a new risk engine module.
-    /// @dev Only callable by `RISK_ADMIN_ROLE`.
-    function setRiskEngine(address newRiskEngine) external onlyRole(RISK_ADMIN_ROLE) {
-        _setRiskEngine(newRiskEngine);
-    }
-
-    /// @notice Sets a new interest model module.
-    /// @dev Only callable by `RISK_ADMIN_ROLE`.
-    function setInterestModel(address newInterestModel) external onlyRole(RISK_ADMIN_ROLE) {
-        _setInterestModel(newInterestModel);
-    }
-
-    /// @notice Sets a new reputation hook module.
-    /// @dev Only callable by `RISK_ADMIN_ROLE`.
-    function setReputationHook(address newReputationHook) external onlyRole(RISK_ADMIN_ROLE) {
-        _setReputationHook(newReputationHook);
-    }
-
-    /// @notice Sets a new treasury address.
-    /// @dev Only callable by `DEFAULT_ADMIN_ROLE`.
-    function setTreasury(address newTreasury) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _setTreasury(newTreasury);
-    }
-
-    /// @notice Pauses borrowing/repaying flows.
-    /// @dev Only callable by `PAUSER_ROLE`.
-    function pause() external onlyRole(PAUSER_ROLE) {
+    function pause() external onlyOwner {
         _pause();
     }
 
-    /// @notice Unpauses borrowing/repaying flows.
-    /// @dev Only callable by `PAUSER_ROLE`.
-    function unpause() external onlyRole(PAUSER_ROLE) {
+    function unpause() external onlyOwner {
         _unpause();
     }
 
-    /// @notice Opens a new loan.
-    /// @dev Transfers borrowed ERC20 from the pool to the borrower and escrows collateral ERC20 (if provided).
-    /// @param req Borrow request parameters.
-    /// @return loanId Newly created loan id.
-    function borrow(Types.BorrowRequest calldata req) external whenNotPaused nonReentrant returns (uint256 loanId) {
-        if (
-            address(riskEngine) == address(0) || address(interestModel) == address(0)
-                || address(reputationHook) == address(0)
-        ) revert Errors.ModuleNotSet();
-        if (req.asset == address(0)) revert Errors.InvalidAddress();
-        if (req.amount == 0) revert Errors.InvalidAmount();
-        if (activeLoanIdOf[msg.sender] != 0) revert Errors.LoanAlreadyActive();
-
-        Types.RiskResult memory result = riskEngine.assessBorrow(msg.sender, req);
-        if (!result.allowed || req.amount > result.maxBorrow) revert Errors.BorrowNotAllowed();
-
-        loanId = nextLoanId;
-        nextLoanId = loanId + 1;
-
-        uint64 startTs = block.timestamp.toUint64();
-        uint64 dueTs = (uint256(startTs) + uint256(req.duration)).toUint64();
-
-        loans[loanId] = Types.Loan({
-            borrower: msg.sender,
-            asset: req.asset,
-            collateralAsset: req.collateralAsset,
-            principal: req.amount,
-            principalRepaid: 0,
-            collateralAmount: req.collateralAmount,
-            startTs: startTs,
-            dueTs: dueTs,
-            status: Types.LoanStatus.Active
-        });
-
-        activeLoanIdOf[msg.sender] = loanId;
-
-        if (req.collateralAsset == address(0)) {
-            if (req.collateralAmount != 0) revert Errors.InvalidAmount();
-        } else if (req.collateralAmount != 0) {
-            IERC20(req.collateralAsset).safeTransferFrom(msg.sender, address(this), req.collateralAmount);
-        }
-
-        uint256 originationFee = _feeAmount(req.amount, originationFeeBps);
-        if (IERC20(req.asset).balanceOf(address(this)) < req.amount) revert Errors.BorrowNotAllowed();
-
-        IERC20(req.asset).safeTransfer(msg.sender, req.amount - originationFee);
-        if (originationFee != 0) {
-            IERC20(req.asset).safeTransfer(treasury, originationFee);
-        }
-
-        reputationHook.onLoanOpened(loanId, msg.sender);
-
-        emit LoanOpened(loanId, msg.sender, req.asset, req.amount, dueTs);
+    function availableLiquidity() public view returns (uint256) {
+        return token.balanceOf(address(this)) - lockedCollateral;
     }
 
-    /// @notice Repays an active loan.
-    /// @dev On full repay, releases collateral and sends protocol fee (from interest) to the treasury.
-    /// @param loanId Loan id.
-    /// @param amount Amount being repaid.
-    function repay(uint256 loanId, uint256 amount) external whenNotPaused nonReentrant {
+    function depositLiquidity(uint256 amount) external onlyOwner whenNotPaused nonReentrant {
         if (amount == 0) revert Errors.InvalidAmount();
-        if (address(interestModel) == address(0) || address(reputationHook) == address(0)) {
-            revert Errors.ModuleNotSet();
+        token.safeTransferFrom(msg.sender, address(this), amount);
+        emit LiquidityDeposited(msg.sender, amount);
+    }
+
+    function withdrawLiquidity(uint256 amount, address to) external onlyOwner whenNotPaused nonReentrant {
+        if (to == address(0)) revert Errors.InvalidAddress();
+        if (amount == 0) revert Errors.InvalidAmount();
+        if (availableLiquidity() < amount) revert Errors.InsufficientLiquidity();
+        token.safeTransfer(to, amount);
+        emit LiquidityWithdrawn(to, amount);
+    }
+
+    function borrow(uint256 amount, uint256 collateralAmount, uint64 duration) external whenNotPaused nonReentrant {
+        if (amount == 0) revert Errors.InvalidAmount();
+        if (duration == 0) revert Errors.InvalidDuration();
+
+        Loan storage loan = loanOf[msg.sender];
+        if (loan.active) revert Errors.LoanAlreadyActive();
+
+        uint16 ratioBps = riskEngine.collateralRatioBps(msg.sender);
+        uint256 maxBorrow = riskEngine.maxBorrow(msg.sender);
+        if (amount > maxBorrow) revert Errors.BorrowNotAllowed();
+
+        if (ratioBps != 0) {
+            uint256 required = Math.mulDiv(amount, ratioBps, BPS, Math.Rounding.Ceil);
+            if (collateralAmount < required) revert Errors.LowCollateral();
         }
 
-        Types.Loan storage loan = loans[loanId];
-        if (loan.borrower == address(0)) revert Errors.LoanNotFound();
-        if (loan.status != Types.LoanStatus.Active) revert Errors.LoanNotActive();
-        if (loan.borrower != msg.sender) revert Errors.RepayNotAllowed();
+        if (availableLiquidity() < amount) revert Errors.InsufficientLiquidity();
 
-        IERC20(loan.asset).safeTransferFrom(msg.sender, address(this), amount);
-        loan.principalRepaid += amount;
+        if (collateralAmount != 0) {
+            token.safeTransferFrom(msg.sender, address(this), collateralAmount);
+            lockedCollateral += collateralAmount;
+        }
 
-        uint64 nowTs = block.timestamp.toUint64();
-        uint256 totalDebt = interestModel.debtWithPenalty(loan.principal, loan.startTs, loan.dueTs, nowTs);
+        uint256 originationFee = _feeAmount(amount, originationFeeBps);
+        token.safeTransfer(msg.sender, amount - originationFee);
+        if (originationFee != 0) {
+            token.safeTransfer(treasury, originationFee);
+        }
 
-        bool fullyRepaid = loan.principalRepaid >= totalDebt;
+        loan.principal = amount;
+        loan.collateral = collateralAmount;
+        loan.repaid = 0;
+        loan.start = uint64(block.timestamp);
+        loan.due = uint64(block.timestamp) + duration;
+        loan.active = true;
+
+        emit Borrowed(msg.sender, amount, collateralAmount, loan.due, originationFee);
+    }
+
+    function repay(uint256 amount) external whenNotPaused nonReentrant {
+        if (amount == 0) revert Errors.InvalidAmount();
+
+        Loan storage loan = loanOf[msg.sender];
+        if (!loan.active) revert Errors.LoanNotActive();
+
+        token.safeTransferFrom(msg.sender, address(this), amount);
+        loan.repaid += amount;
+
+        uint64 nowTs = uint64(block.timestamp);
+        uint256 totalDebt = interestModel.debtWithPenalty(loan.principal, loan.start, loan.due, nowTs);
+
+        bool fullyRepaid = loan.repaid >= totalDebt;
         uint256 paidNet = amount;
 
         if (fullyRepaid) {
-            uint256 overpay = loan.principalRepaid - totalDebt;
+            uint256 overpay = loan.repaid - totalDebt;
             if (overpay != 0) {
                 paidNet = amount - overpay;
-                loan.principalRepaid = totalDebt;
-                IERC20(loan.asset).safeTransfer(msg.sender, overpay);
+                loan.repaid = totalDebt;
+                token.safeTransfer(msg.sender, overpay);
             }
 
-            loan.status = Types.LoanStatus.Repaid;
-            activeLoanIdOf[msg.sender] = 0;
-        }
+            loan.active = false;
 
-        reputationHook.onLoanRepaid(loanId, msg.sender, paidNet, loan.principalRepaid, totalDebt, fullyRepaid);
+            if (loan.collateral != 0) {
+                lockedCollateral -= loan.collateral;
+                token.safeTransfer(msg.sender, loan.collateral);
+            }
 
-        emit LoanRepaid(loanId, msg.sender, paidNet, loan.principalRepaid);
-
-        if (fullyRepaid) {
             uint256 interestAccrued = totalDebt > loan.principal ? totalDebt - loan.principal : 0;
-            uint256 protocolFee = _feeAmount(interestAccrued, protocolFeeBps);
-            if (protocolFee != 0) {
-                IERC20(loan.asset).safeTransfer(treasury, protocolFee);
+            uint256 fee = _feeAmount(interestAccrued, protocolFeeBps);
+            if (fee != 0) {
+                token.safeTransfer(treasury, fee);
             }
 
-            if (loan.collateralAsset != address(0) && loan.collateralAmount != 0) {
-                IERC20(loan.collateralAsset).safeTransfer(msg.sender, loan.collateralAmount);
-            }
+            _increaseScore(msg.sender);
         }
+
+        emit Repaid(msg.sender, paidNet, loan.repaid, totalDebt, fullyRepaid);
     }
 
-    /// @notice Marks a loan as defaulted if it is past due.
-    /// @param loanId Loan id.
-    function markDefault(uint256 loanId) external whenNotPaused nonReentrant {
-        if (address(reputationHook) == address(0)) revert Errors.ModuleNotSet();
+    function markDefault(address borrower) external whenNotPaused nonReentrant {
+        Loan storage loan = loanOf[borrower];
+        if (!loan.active) revert Errors.LoanNotActive();
+        if (block.timestamp <= loan.due) revert Errors.NotPastDue();
 
-        Types.Loan storage loan = loans[loanId];
-        if (loan.borrower == address(0)) revert Errors.LoanNotFound();
-        if (loan.status != Types.LoanStatus.Active) revert Errors.LoanNotActive();
+        loan.active = false;
 
-        uint64 nowTs = block.timestamp.toUint64();
-        if (nowTs <= loan.dueTs) revert Errors.NotPastDue();
+        if (loan.collateral != 0) {
+            lockedCollateral -= loan.collateral; // seized collateral becomes pool liquidity
+        }
 
-        loan.status = Types.LoanStatus.Defaulted;
-        activeLoanIdOf[loan.borrower] = 0;
-
-        reputationHook.onLoanDefaulted(loanId, loan.borrower);
-
-        emit LoanDefaulted(loanId, loan.borrower);
-
-        // TODO: mint default badge, seize collateral, etc.
+        badgeSbt.mintBadge(borrower);
+        emit Defaulted(borrower);
     }
 
-    /// @notice Returns the full loan data by id.
-    function getLoan(uint256 loanId) external view returns (Types.Loan memory) {
-        Types.Loan memory loan = loans[loanId];
-        if (loan.borrower == address(0)) revert Errors.LoanNotFound();
-        return loan;
+    function getLoan(address borrower) external view returns (Loan memory) {
+        return loanOf[borrower];
     }
 
-    /// @notice Returns current debt for an active loan, including penalty after due date.
-    function getDebt(uint256 loanId) external view returns (uint256) {
-        if (address(interestModel) == address(0)) revert Errors.ModuleNotSet();
-
-        Types.Loan memory loan = loans[loanId];
-        if (loan.borrower == address(0)) revert Errors.LoanNotFound();
-        if (loan.status != Types.LoanStatus.Active) return 0;
-
-        return interestModel.debtWithPenalty(loan.principal, loan.startTs, loan.dueTs, block.timestamp.toUint64());
+    function getDebt(address borrower) external view returns (uint256) {
+        Loan memory loan = loanOf[borrower];
+        if (!loan.active) return 0;
+        return interestModel.debtWithPenalty(loan.principal, loan.start, loan.due, uint64(block.timestamp));
     }
 
-    function _setRiskEngine(address newRiskEngine) internal {
-        if (newRiskEngine == address(0)) revert Errors.InvalidAddress();
-        riskEngine = IRiskEngine(newRiskEngine);
-        emit ModulesUpdated(address(riskEngine), address(interestModel));
+    function isDefaulter(address borrower) external view returns (bool) {
+        return riskEngine.isDefaulter(borrower);
     }
 
-    function _setInterestModel(address newInterestModel) internal {
-        if (newInterestModel == address(0)) revert Errors.InvalidAddress();
-        interestModel = IInterestModel(newInterestModel);
-        emit ModulesUpdated(address(riskEngine), address(interestModel));
-    }
+    function _increaseScore(address borrower) internal {
+        uint16 s = scoreSbt.scoreOf(borrower);
+        if (s >= SCORE_FREE) return;
 
-    function _setReputationHook(address newReputationHook) internal {
-        if (newReputationHook == address(0)) revert Errors.InvalidAddress();
-        reputationHook = IReputationHook(newReputationHook);
-        emit ReputationHookUpdated(newReputationHook);
-    }
+        uint256 next = uint256(s) + uint256(scoreIncrement);
+        if (next > SCORE_FREE) next = SCORE_FREE;
 
-    function _setTreasury(address newTreasury) internal {
-        if (newTreasury == address(0)) revert Errors.InvalidAddress();
-        treasury = newTreasury;
-        emit TreasuryUpdated(newTreasury);
+        scoreSbt.setScore(borrower, uint16(next));
     }
 
     function _feeAmount(uint256 amount, uint16 feeBps) internal pure returns (uint256) {
@@ -366,5 +282,5 @@ contract LendingPool is
         return Math.mulDiv(amount, uint256(feeBps), BPS);
     }
 
-    function _authorizeUpgrade(address) internal override onlyRole(UPGRADER_ROLE) {}
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 }

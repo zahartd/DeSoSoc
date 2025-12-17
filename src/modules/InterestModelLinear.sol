@@ -22,19 +22,17 @@ contract InterestModelLinear is IInterestModel {
         penaltyAprBps = penaltyAprBps_;
     }
 
-    /// @inheritdoc IInterestModel
     function debt(uint256 principal, uint64 startTs, uint64 nowTs) external view returns (uint256) {
         return _debtAtRate(principal, startTs, nowTs, aprBps);
     }
 
-    /// @inheritdoc IInterestModel
     function debtWithPenalty(uint256 principal, uint64 startTs, uint64 dueTs, uint64 nowTs)
         external
         view
         returns (uint256)
     {
         if (principal == 0) return 0;
-        if (startTs == 0 || nowTs <= startTs) return principal;
+        if (nowTs <= startTs) return principal;
 
         if (nowTs <= dueTs) {
             return _debtAtRate(principal, startTs, nowTs, aprBps);
@@ -56,7 +54,7 @@ contract InterestModelLinear is IInterestModel {
         returns (uint256)
     {
         if (principal == 0) return 0;
-        if (startTs == 0 || nowTs <= startTs) return principal;
+        if (nowTs <= startTs) return principal;
 
         uint256 dt = uint256(nowTs - startTs);
         return principal + _interest(principal, rateBps, dt);

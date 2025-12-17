@@ -13,3 +13,4 @@ interface IInterestModel {
         view
         returns (uint256);
 }
+

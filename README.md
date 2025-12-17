@@ -15,7 +15,7 @@
 ## Архитектура (high-level)
 - `LendingPool` — core (UUPS Proxy + Impl), хранит займы и исполняет операции
 - `RiskEngine` — политика доступа/залога (легко заменить)
-- `InterestModel` — в текущей версии убран для простоты (долг = principal, без процентов)
+- `InterestModel` — модель начисления долга (например `InterestModelLinear`)
 - `CreditScoreSBT` — soulbound “кредитный скор”
 - `DefaultBadgeSBT` — soulbound “дефолтер” (в коде: `BlackBadgeSBT`)
 - опционально: `PriceOracle` и `IdentityVerifier` (в текущей версии убрано)

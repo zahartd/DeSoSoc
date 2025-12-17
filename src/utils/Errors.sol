@@ -13,6 +13,21 @@ library Errors {
     /// @notice Amount parameter is invalid (e.g. zero).
     error InvalidAmount();
 
+    /// @notice Duration parameter is invalid (e.g. zero).
+    error InvalidDuration();
+
+    /// @notice Basis points value is invalid (e.g. > 10_000).
+    error InvalidBps();
+
+    /// @notice Protocol has insufficient free liquidity for the operation.
+    error InsufficientLiquidity();
+
+    /// @notice Collateral provided is below the required threshold.
+    error LowCollateral();
+
+    /// @notice Reentrancy detected.
+    error Reentrancy();
+
     /// @notice Borrower already has an active loan.
     error LoanAlreadyActive();
 

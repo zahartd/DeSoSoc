@@ -1,6 +1,7 @@
 # Compiler files
 cache/
 out/
+/.svm/
 
 # Ignores development broadcast logs
 !/broadcast

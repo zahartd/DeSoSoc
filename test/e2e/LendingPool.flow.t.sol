@@ -8,9 +8,13 @@ import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
 
 import {LendingPool} from "../../src/core/LendingPool.sol";
 import {Types} from "../../src/utils/Types.sol";
+import {Errors} from "../../src/utils/Errors.sol";
 import {InterestModelLinear} from "../../src/modules/InterestModelLinear.sol";
+import {PriceOracleMock} from "../../src/modules/PriceOracleMock.sol";
 import {ReputationHookMock} from "../../src/modules/ReputationHookMock.sol";
-import {RiskEngineSimple} from "../../src/modules/RiskEngineSimple.sol";
+import {RiskEngine} from "../../src/modules/RiskEngine.sol";
+import {CreditScoreSBTMock} from "../../src/modules/CreditScoreSBTMock.sol";
+import {DefaultBadgeSBTMock} from "../../src/modules/DefaultBadgeSBTMock.sol";
 
 contract LendingPoolFlowTest is Test {
     uint256 internal constant BPS = 10_000;
@@ -19,22 +23,34 @@ contract LendingPoolFlowTest is Test {
     ERC20Mock internal asset;
     ERC20Mock internal collateral;
 
-    RiskEngineSimple internal riskEngine;
+    PriceOracleMock internal oracle;
+    RiskEngine internal riskEngine;
     InterestModelLinear internal interestModel;
     ReputationHookMock internal hook;
+
+    CreditScoreSBTMock internal scoreSbt;
+    DefaultBadgeSBTMock internal badgeSbt;
 
     address internal admin = address(this);
     address internal treasury = address(0xBEEF);
 
     address internal alice = address(0xA11CE);
+    address internal bob = address(0xB0B);
 
     function setUp() public {
         asset = new ERC20Mock();
         collateral = new ERC20Mock();
 
-        riskEngine = new RiskEngineSimple(address(this), address(0), address(0), address(0), address(0));
-        interestModel = new InterestModelLinear(1000, 2000); // 10% APR, 20% penalty APR (v0 example)
+        oracle = new PriceOracleMock(address(this));
+        oracle.setPrice(address(collateral), address(asset), 1e18, 18);
+
+        scoreSbt = new CreditScoreSBTMock(address(this));
+        badgeSbt = new DefaultBadgeSBTMock(address(this));
         hook = new ReputationHookMock(address(this));
+
+        riskEngine = new RiskEngine(address(this), address(scoreSbt), address(badgeSbt), address(0), address(oracle));
+        riskEngine.setConfig(false, 1_000 ether);
+        interestModel = new InterestModelLinear(1000, 2000); // 10% APR, 20% penalty APR (v0 example)
 
         LendingPool impl = new LendingPool();
         bytes memory initData = abi.encodeCall(
@@ -57,6 +73,12 @@ contract LendingPoolFlowTest is Test {
         collateral.approve(address(pool), type(uint256).max);
         vm.prank(alice);
         asset.approve(address(pool), type(uint256).max);
+
+        collateral.mint(bob, 1_000 ether);
+        vm.prank(bob);
+        collateral.approve(address(pool), type(uint256).max);
+        vm.prank(bob);
+        asset.approve(address(pool), type(uint256).max);
     }
 
     function test_liquidity_adminDepositWithdraw() public {
@@ -66,7 +88,7 @@ contract LendingPoolFlowTest is Test {
         assertEq(asset.balanceOf(admin), 10 ether);
     }
 
-    function test_flow_borrow_repay_splitsInterestAndReturnsCollateral() public {
+    function test_flow_borrow_repay_increasesScore_and_relaxesCollateralRatio() public {
         vm.warp(1_000);
 
         uint256 principal = 100 ether;
@@ -109,6 +131,11 @@ contract LendingPoolFlowTest is Test {
         vm.prank(alice);
         pool.repay(loanId, debt);
 
+        // Out of scope: SBT / score update is mocked here.
+        scoreSbt.setScore(alice, 250);
+        assertEq(scoreSbt.scoreOf(alice), 250);
+        assertEq(riskEngine.collateralRatioBps(alice), 10_313);
+
         Types.Loan memory loanAfter = pool.getLoan(loanId);
         assertEq(uint8(loanAfter.status), uint8(Types.LoanStatus.Repaid));
         assertEq(pool.activeLoanIdOf(alice), 0);
@@ -120,9 +147,22 @@ contract LendingPoolFlowTest is Test {
         // Collateral returned.
         assertEq(collateral.balanceOf(address(pool)), 0);
         assertEq(collateral.balanceOf(alice), aliceCollateralBefore);
+
+        // Second loan with better terms: same collateral supports a larger borrow amount.
+        Types.BorrowRequest memory req2 = Types.BorrowRequest({
+            asset: address(asset),
+            amount: 120 ether,
+            collateralAsset: address(collateral),
+            collateralAmount: collateralAmount,
+            duration: duration,
+            proof: hex""
+        });
+
+        vm.prank(alice);
+        pool.borrow(req2);
     }
 
-    function test_flow_default_keepsCollateralEscrowed() public {
+    function test_flow_default_mintsBadge_and_blocksBorrow() public {
         vm.warp(1_000);
 
         Types.BorrowRequest memory req = Types.BorrowRequest({
@@ -134,9 +174,7 @@ contract LendingPoolFlowTest is Test {
             proof: hex""
         });
 
-        uint256 aliceCollateralBefore = collateral.balanceOf(alice);
-
-        vm.prank(alice);
+        vm.prank(bob);
         uint256 loanId = pool.borrow(req);
 
         Types.Loan memory loanBefore = pool.getLoan(loanId);
@@ -144,13 +182,18 @@ contract LendingPoolFlowTest is Test {
 
         pool.markDefault(loanId);
 
+        // Out of scope: SBT badge mint is mocked here.
+        badgeSbt.mintBadge(bob);
+
         Types.Loan memory loanAfter = pool.getLoan(loanId);
         assertEq(uint8(loanAfter.status), uint8(Types.LoanStatus.Defaulted));
-        assertEq(pool.activeLoanIdOf(alice), 0);
+        assertEq(pool.activeLoanIdOf(bob), 0);
+        assertTrue(badgeSbt.hasBadge(bob));
+        assertTrue(riskEngine.isDefaulter(bob));
 
-        // Collateral remains in escrow.
-        assertEq(collateral.balanceOf(address(pool)), req.collateralAmount);
-        assertEq(collateral.balanceOf(alice), aliceCollateralBefore - req.collateralAmount);
+        vm.startPrank(bob);
+        vm.expectRevert(Errors.BorrowNotAllowed.selector);
+        pool.borrow(req);
+        vm.stopPrank();
     }
 }
-

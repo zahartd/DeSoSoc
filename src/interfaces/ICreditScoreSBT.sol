@@ -4,6 +4,12 @@ pragma solidity ^0.8.20;
 /// @title ICreditScoreSBT
 /// @notice Interface for the soulbound credit score token.
 interface ICreditScoreSBT {
+    /// @notice Returns true if `user` owns a score token.
+    function hasToken(address user) external view returns (bool);
+
+    /// @notice Returns tokenId owned by `user`, 0 if none.
+    function tokenOf(address user) external view returns (uint256);
+
     /// @notice Returns current score (0..10000 or arbitrary scale) for `user`.
     function scoreOf(address user) external view returns (uint16);
 

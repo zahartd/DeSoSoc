@@ -13,12 +13,12 @@
 При дефолте адрес получает `DefaultBadge` (SBT), после чего политика по умолчанию запрещает новые займы.
 
 ## Архитектура (high-level)
-- `LendingPool` — core, хранит займы и исполняет операции
+- `LendingPool` — core (UUPS Proxy + Impl), хранит займы и исполняет операции
 - `RiskEngine` — политика доступа/залога (легко заменить)
-- `InterestModel` — модель начисления долга (легко заменить)
+- `InterestModel` — в текущей версии убран для простоты (долг = principal, без процентов)
 - `CreditScoreSBT` — soulbound “кредитный скор”
-- `DefaultBadgeSBT` — soulbound “дефолтер”
-- опционально: `PriceOracle` и `IdentityVerifier`
+- `DefaultBadgeSBT` — soulbound “дефолтер” (в коде: `BlackBadgeSBT`)
+- опционально: `PriceOracle` и `IdentityVerifier` (в текущей версии убрано)
 
 ## Документация
 - [`docs/ADR.md`](docs/ADR.md) — принятые архитектурные решения

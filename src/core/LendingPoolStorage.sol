@@ -9,6 +9,12 @@ import {IRiskEngine} from "../interfaces/IRiskEngine.sol";
 /// @title LendingPoolStorage
 /// @notice Storage layout for {LendingPool}.
 abstract contract LendingPoolStorage {
+    /// @notice Protocol fee (bps) taken from accrued interest on full repay.
+    uint16 public protocolFeeBps;
+
+    /// @notice Origination fee (bps) charged on borrow (taken from borrowed asset).
+    uint16 public originationFeeBps;
+
     /// @notice Active risk engine module.
     IRiskEngine public riskEngine;
 
@@ -30,5 +36,5 @@ abstract contract LendingPoolStorage {
     /// @notice Active loan id for a borrower (0 if none).
     mapping(address borrower => uint256 loanId) public activeLoanIdOf;
 
-    uint256[50] private __gap;
+    uint256[49] private __gap;
 }

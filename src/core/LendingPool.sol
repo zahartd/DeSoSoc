@@ -2,6 +2,9 @@
 pragma solidity ^0.8.20;
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
@@ -26,7 +29,10 @@ contract LendingPool is
     ReentrancyGuard,
     LendingPoolStorage
 {
+    using SafeERC20 for IERC20;
     using SafeCast for uint256;
+
+    uint256 internal constant BPS = 10_000;
 
     /// @notice Role allowed to authorize upgrades.
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
@@ -54,6 +60,15 @@ contract LendingPool is
 
     /// @notice Emitted when a loan is marked as defaulted.
     event LoanDefaulted(uint256 indexed loanId, address indexed borrower);
+
+    /// @notice Emitted when protocol fee settings are updated.
+    event FeesUpdated(uint16 protocolFeeBps, uint16 originationFeeBps);
+
+    /// @notice Emitted when liquidity is deposited into the pool.
+    event LiquidityDeposited(address indexed asset, address indexed from, uint256 amount);
+
+    /// @notice Emitted when liquidity is withdrawn from the pool.
+    event LiquidityWithdrawn(address indexed asset, address indexed to, uint256 amount);
 
     constructor() {
         _disableInitializers();
@@ -88,6 +103,49 @@ contract LendingPool is
         _setTreasury(treasury_);
 
         nextLoanId = 1;
+    }
+
+    /// @notice Updates fee configuration.
+    /// @dev Only callable by `DEFAULT_ADMIN_ROLE`.
+    /// @param newProtocolFeeBps Fee (bps) taken from accrued interest on full repay.
+    /// @param newOriginationFeeBps Fee (bps) charged on borrow (taken from borrowed asset).
+    function setFees(uint16 newProtocolFeeBps, uint16 newOriginationFeeBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newProtocolFeeBps > BPS || newOriginationFeeBps > BPS) revert Errors.InvalidAmount();
+
+        protocolFeeBps = newProtocolFeeBps;
+        originationFeeBps = newOriginationFeeBps;
+
+        emit FeesUpdated(newProtocolFeeBps, newOriginationFeeBps);
+    }
+
+    /// @notice Deposits ERC20 liquidity into the pool.
+    /// @dev Only callable by `DEFAULT_ADMIN_ROLE` in v0.
+    function depositLiquidity(address asset, uint256 amount)
+        external
+        whenNotPaused
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (asset == address(0)) revert Errors.InvalidAddress();
+        if (amount == 0) revert Errors.InvalidAmount();
+
+        IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
+        emit LiquidityDeposited(asset, msg.sender, amount);
+    }
+
+    /// @notice Withdraws ERC20 liquidity from the pool.
+    /// @dev Only callable by `DEFAULT_ADMIN_ROLE` in v0.
+    function withdrawLiquidity(address asset, uint256 amount, address to)
+        external
+        whenNotPaused
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (asset == address(0) || to == address(0)) revert Errors.InvalidAddress();
+        if (amount == 0) revert Errors.InvalidAmount();
+
+        IERC20(asset).safeTransfer(to, amount);
+        emit LiquidityWithdrawn(asset, to, amount);
     }
 
     /// @notice Sets a new risk engine module.
@@ -126,7 +184,8 @@ contract LendingPool is
         _unpause();
     }
 
-    /// @notice Opens a new loan (token transfers are TODO for v0).
+    /// @notice Opens a new loan.
+    /// @dev Transfers borrowed ERC20 from the pool to the borrower and escrows collateral ERC20 (if provided).
     /// @param req Borrow request parameters.
     /// @return loanId Newly created loan id.
     function borrow(Types.BorrowRequest calldata req) external whenNotPaused nonReentrant returns (uint256 loanId) {
@@ -161,15 +220,27 @@ contract LendingPool is
 
         activeLoanIdOf[msg.sender] = loanId;
 
-        // TODO: transfer borrowed asset from liquidity source to borrower.
-        // TODO: escrow collateral / validate collateral amount.
+        if (req.collateralAsset == address(0)) {
+            if (req.collateralAmount != 0) revert Errors.InvalidAmount();
+        } else if (req.collateralAmount != 0) {
+            IERC20(req.collateralAsset).safeTransferFrom(msg.sender, address(this), req.collateralAmount);
+        }
+
+        uint256 originationFee = _feeAmount(req.amount, originationFeeBps);
+        if (IERC20(req.asset).balanceOf(address(this)) < req.amount) revert Errors.BorrowNotAllowed();
+
+        IERC20(req.asset).safeTransfer(msg.sender, req.amount - originationFee);
+        if (originationFee != 0) {
+            IERC20(req.asset).safeTransfer(treasury, originationFee);
+        }
 
         reputationHook.onLoanOpened(loanId, msg.sender);
 
         emit LoanOpened(loanId, msg.sender, req.asset, req.amount, dueTs);
     }
 
-    /// @notice Repays an active loan (token transfers are TODO for v0).
+    /// @notice Repays an active loan.
+    /// @dev On full repay, releases collateral and sends protocol fee (from interest) to the treasury.
     /// @param loanId Loan id.
     /// @param amount Amount being repaid.
     function repay(uint256 loanId, uint256 amount) external whenNotPaused nonReentrant {
@@ -183,22 +254,41 @@ contract LendingPool is
         if (loan.status != Types.LoanStatus.Active) revert Errors.LoanNotActive();
         if (loan.borrower != msg.sender) revert Errors.RepayNotAllowed();
 
-        // TODO: transferFrom borrower -> treasury / pool.
+        IERC20(loan.asset).safeTransferFrom(msg.sender, address(this), amount);
         loan.principalRepaid += amount;
 
         uint64 nowTs = block.timestamp.toUint64();
         uint256 totalDebt = interestModel.debtWithPenalty(loan.principal, loan.startTs, loan.dueTs, nowTs);
 
         bool fullyRepaid = loan.principalRepaid >= totalDebt;
-        reputationHook.onLoanRepaid(loanId, msg.sender, amount, loan.principalRepaid, totalDebt, fullyRepaid);
-
-        emit LoanRepaid(loanId, msg.sender, amount, loan.principalRepaid);
+        uint256 paidNet = amount;
 
         if (fullyRepaid) {
+            uint256 overpay = loan.principalRepaid - totalDebt;
+            if (overpay != 0) {
+                paidNet = amount - overpay;
+                loan.principalRepaid = totalDebt;
+                IERC20(loan.asset).safeTransfer(msg.sender, overpay);
+            }
+
             loan.status = Types.LoanStatus.Repaid;
             activeLoanIdOf[msg.sender] = 0;
+        }
 
-            // TODO: release collateral back to borrower.
+        reputationHook.onLoanRepaid(loanId, msg.sender, paidNet, loan.principalRepaid, totalDebt, fullyRepaid);
+
+        emit LoanRepaid(loanId, msg.sender, paidNet, loan.principalRepaid);
+
+        if (fullyRepaid) {
+            uint256 interestAccrued = totalDebt > loan.principal ? totalDebt - loan.principal : 0;
+            uint256 protocolFee = _feeAmount(interestAccrued, protocolFeeBps);
+            if (protocolFee != 0) {
+                IERC20(loan.asset).safeTransfer(treasury, protocolFee);
+            }
+
+            if (loan.collateralAsset != address(0) && loan.collateralAmount != 0) {
+                IERC20(loan.collateralAsset).safeTransfer(msg.sender, loan.collateralAmount);
+            }
         }
     }
 
@@ -264,6 +354,11 @@ contract LendingPool is
         if (newTreasury == address(0)) revert Errors.InvalidAddress();
         treasury = newTreasury;
         emit TreasuryUpdated(newTreasury);
+    }
+
+    function _feeAmount(uint256 amount, uint16 feeBps) internal pure returns (uint256) {
+        if (amount == 0 || feeBps == 0) return 0;
+        return Math.mulDiv(amount, uint256(feeBps), BPS);
     }
 
     function _authorizeUpgrade(address) internal override onlyRole(UPGRADER_ROLE) {}

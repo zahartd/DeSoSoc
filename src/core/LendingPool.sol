@@ -13,6 +13,7 @@ import {LendingPoolStorage} from "./LendingPoolStorage.sol";
 import {Errors} from "../utils/Errors.sol";
 import {Types} from "../utils/Types.sol";
 import {IInterestModel} from "../interfaces/IInterestModel.sol";
+import {IReputationHook} from "../interfaces/IReputationHook.sol";
 import {IRiskEngine} from "../interfaces/IRiskEngine.sol";
 
 /// @title LendingPool
@@ -39,6 +40,9 @@ contract LendingPool is
     /// @notice Emitted when risk/interest modules are updated.
     event ModulesUpdated(address riskEngine, address interestModel);
 
+    /// @notice Emitted when reputation hook is updated.
+    event ReputationHookUpdated(address reputationHook);
+
     /// @notice Emitted when treasury address is updated.
     event TreasuryUpdated(address treasury);
 
@@ -59,11 +63,15 @@ contract LendingPool is
     /// @param admin Default admin (also receives upgrader/risk-admin/pauser roles).
     /// @param riskEngine_ Risk engine module address.
     /// @param interestModel_ Interest model module address.
+    /// @param reputationHook_ Reputation hook module address.
     /// @param treasury_ Treasury address placeholder.
-    function initialize(address admin, address riskEngine_, address interestModel_, address treasury_)
-        external
-        initializer
-    {
+    function initialize(
+        address admin,
+        address riskEngine_,
+        address interestModel_,
+        address reputationHook_,
+        address treasury_
+    ) external initializer {
         if (admin == address(0)) revert Errors.InvalidAddress();
 
         __AccessControl_init();
@@ -76,6 +84,7 @@ contract LendingPool is
 
         _setRiskEngine(riskEngine_);
         _setInterestModel(interestModel_);
+        _setReputationHook(reputationHook_);
         _setTreasury(treasury_);
 
         nextLoanId = 1;
@@ -91,6 +100,12 @@ contract LendingPool is
     /// @dev Only callable by `RISK_ADMIN_ROLE`.
     function setInterestModel(address newInterestModel) external onlyRole(RISK_ADMIN_ROLE) {
         _setInterestModel(newInterestModel);
+    }
+
+    /// @notice Sets a new reputation hook module.
+    /// @dev Only callable by `RISK_ADMIN_ROLE`.
+    function setReputationHook(address newReputationHook) external onlyRole(RISK_ADMIN_ROLE) {
+        _setReputationHook(newReputationHook);
     }
 
     /// @notice Sets a new treasury address.
@@ -115,7 +130,10 @@ contract LendingPool is
     /// @param req Borrow request parameters.
     /// @return loanId Newly created loan id.
     function borrow(Types.BorrowRequest calldata req) external whenNotPaused nonReentrant returns (uint256 loanId) {
-        if (address(riskEngine) == address(0) || address(interestModel) == address(0)) revert Errors.ModuleNotSet();
+        if (
+            address(riskEngine) == address(0) || address(interestModel) == address(0)
+                || address(reputationHook) == address(0)
+        ) revert Errors.ModuleNotSet();
         if (req.asset == address(0)) revert Errors.InvalidAddress();
         if (req.amount == 0) revert Errors.InvalidAmount();
         if (activeLoanIdOf[msg.sender] != 0) revert Errors.LoanAlreadyActive();
@@ -146,6 +164,8 @@ contract LendingPool is
         // TODO: transfer borrowed asset from liquidity source to borrower.
         // TODO: escrow collateral / validate collateral amount.
 
+        reputationHook.onLoanOpened(loanId, msg.sender);
+
         emit LoanOpened(loanId, msg.sender, req.asset, req.amount, dueTs);
     }
 
@@ -154,7 +174,9 @@ contract LendingPool is
     /// @param amount Amount being repaid.
     function repay(uint256 loanId, uint256 amount) external whenNotPaused nonReentrant {
         if (amount == 0) revert Errors.InvalidAmount();
-        if (address(interestModel) == address(0)) revert Errors.ModuleNotSet();
+        if (address(interestModel) == address(0) || address(reputationHook) == address(0)) {
+            revert Errors.ModuleNotSet();
+        }
 
         Types.Loan storage loan = loans[loanId];
         if (loan.borrower == address(0)) revert Errors.LoanNotFound();
@@ -167,9 +189,12 @@ contract LendingPool is
         uint64 nowTs = block.timestamp.toUint64();
         uint256 totalDebt = interestModel.debtWithPenalty(loan.principal, loan.startTs, loan.dueTs, nowTs);
 
+        bool fullyRepaid = loan.principalRepaid >= totalDebt;
+        reputationHook.onLoanRepaid(loanId, msg.sender, amount, loan.principalRepaid, totalDebt, fullyRepaid);
+
         emit LoanRepaid(loanId, msg.sender, amount, loan.principalRepaid);
 
-        if (loan.principalRepaid >= totalDebt) {
+        if (fullyRepaid) {
             loan.status = Types.LoanStatus.Repaid;
             activeLoanIdOf[msg.sender] = 0;
 
@@ -179,7 +204,9 @@ contract LendingPool is
 
     /// @notice Marks a loan as defaulted if it is past due.
     /// @param loanId Loan id.
-    function markDefault(uint256 loanId) external whenNotPaused {
+    function markDefault(uint256 loanId) external whenNotPaused nonReentrant {
+        if (address(reputationHook) == address(0)) revert Errors.ModuleNotSet();
+
         Types.Loan storage loan = loans[loanId];
         if (loan.borrower == address(0)) revert Errors.LoanNotFound();
         if (loan.status != Types.LoanStatus.Active) revert Errors.LoanNotActive();
@@ -189,6 +216,8 @@ contract LendingPool is
 
         loan.status = Types.LoanStatus.Defaulted;
         activeLoanIdOf[loan.borrower] = 0;
+
+        reputationHook.onLoanDefaulted(loanId, loan.borrower);
 
         emit LoanDefaulted(loanId, loan.borrower);
 
@@ -223,6 +252,12 @@ contract LendingPool is
         if (newInterestModel == address(0)) revert Errors.InvalidAddress();
         interestModel = IInterestModel(newInterestModel);
         emit ModulesUpdated(address(riskEngine), address(interestModel));
+    }
+
+    function _setReputationHook(address newReputationHook) internal {
+        if (newReputationHook == address(0)) revert Errors.InvalidAddress();
+        reputationHook = IReputationHook(newReputationHook);
+        emit ReputationHookUpdated(newReputationHook);
     }
 
     function _setTreasury(address newTreasury) internal {

@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Types} from "../utils/Types.sol";
 import {IInterestModel} from "../interfaces/IInterestModel.sol";
+import {IReputationHook} from "../interfaces/IReputationHook.sol";
 import {IRiskEngine} from "../interfaces/IRiskEngine.sol";
 
 /// @title LendingPoolStorage
@@ -13,6 +14,9 @@ abstract contract LendingPoolStorage {
 
     /// @notice Active interest model module.
     IInterestModel public interestModel;
+
+    /// @notice Reputation hook module (required in strict v0 setup).
+    IReputationHook public reputationHook;
 
     /// @notice Treasury address (liquidity source placeholder for v0).
     address public treasury;

@@ -8,6 +8,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {LendingPool} from "../src/core/LendingPool.sol";
 import {Types} from "../src/utils/Types.sol";
 import {InterestModelLinear} from "../src/modules/InterestModelLinear.sol";
+import {ReputationHookMock} from "../src/modules/ReputationHookMock.sol";
 import {RiskEngineSimple} from "../src/modules/RiskEngineSimple.sol";
 
 contract LendingPoolSkeletonTest is Test {
@@ -15,6 +16,7 @@ contract LendingPoolSkeletonTest is Test {
 
     RiskEngineSimple internal riskEngine;
     InterestModelLinear internal interestModel;
+    ReputationHookMock internal hook;
 
     address internal admin = address(this);
     address internal treasury = address(0xBEEF);
@@ -25,10 +27,12 @@ contract LendingPoolSkeletonTest is Test {
     function setUp() public {
         riskEngine = new RiskEngineSimple(address(this), address(0), address(0), address(0), address(0));
         interestModel = new InterestModelLinear(0, 0);
+        hook = new ReputationHookMock(address(this));
 
         LendingPool impl = new LendingPool();
-        bytes memory initData =
-            abi.encodeCall(LendingPool.initialize, (admin, address(riskEngine), address(interestModel), treasury));
+        bytes memory initData = abi.encodeCall(
+            LendingPool.initialize, (admin, address(riskEngine), address(interestModel), address(hook), treasury)
+        );
         ERC1967Proxy proxy = new ERC1967Proxy(address(impl), initData);
         pool = LendingPool(address(proxy));
     }
@@ -36,6 +40,7 @@ contract LendingPoolSkeletonTest is Test {
     function test_initialize_setsConfig() public view {
         assertEq(address(pool.riskEngine()), address(riskEngine));
         assertEq(address(pool.interestModel()), address(interestModel));
+        assertEq(address(pool.reputationHook()), address(hook));
         assertEq(pool.treasury(), treasury);
         assertEq(pool.nextLoanId(), 1);
 
@@ -49,16 +54,20 @@ contract LendingPoolSkeletonTest is Test {
         RiskEngineSimple newRiskEngine =
             new RiskEngineSimple(address(this), address(0), address(0), address(0), address(0));
         InterestModelLinear newInterestModel = new InterestModelLinear(0, 0);
+        ReputationHookMock newHook = new ReputationHookMock(address(this));
 
         vm.startPrank(bob);
         vm.expectRevert();
         pool.setRiskEngine(address(newRiskEngine));
         vm.expectRevert();
         pool.setInterestModel(address(newInterestModel));
+        vm.expectRevert();
+        pool.setReputationHook(address(newHook));
         vm.stopPrank();
 
         pool.setRiskEngine(address(newRiskEngine));
         pool.setInterestModel(address(newInterestModel));
+        pool.setReputationHook(address(newHook));
     }
 
     function test_borrow_opensLoan_and_setsActiveLoanId() public {

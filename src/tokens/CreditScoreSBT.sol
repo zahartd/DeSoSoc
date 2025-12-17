@@ -23,17 +23,30 @@ contract CreditScoreSBT is ICreditScoreSBT, ERC721, Ownable {
         nextTokenId = 1;
     }
 
-    function tokenIdOf(address user) external view returns (uint256) {
+    /// @inheritdoc ICreditScoreSBT
+    function hasToken(address user) external view override returns (bool) {
+        return _tokenIdOf[user] != 0;
+    }
+
+    /// @inheritdoc ICreditScoreSBT
+    function tokenOf(address user) public view override returns (uint256) {
         return _tokenIdOf[user];
     }
 
-    function scoreOf(address user) public view returns (uint16) {
+    /// @notice Returns tokenId owned by `user` (alias for {tokenOf}).
+    function tokenIdOf(address user) external view override returns (uint256) {
+        return tokenOf(user);
+    }
+
+    /// @inheritdoc ICreditScoreSBT
+    function scoreOf(address user) public view override returns (uint16) {
         uint256 tokenId = _tokenIdOf[user];
         if (tokenId == 0) return 0;
         return _scoreOf[tokenId];
     }
 
-    function mintIfNeeded(address user) public onlyOwner returns (uint256 tokenId) {
+    /// @inheritdoc ICreditScoreSBT
+    function mintIfNeeded(address user) public override onlyOwner returns (uint256 tokenId) {
         if (user == address(0)) revert Errors.InvalidAddress();
 
         tokenId = _tokenIdOf[user];
@@ -48,7 +61,8 @@ contract CreditScoreSBT is ICreditScoreSBT, ERC721, Ownable {
         emit ScoreMinted(user, tokenId);
     }
 
-    function setScore(address user, uint16 newScore) external onlyOwner {
+    /// @inheritdoc ICreditScoreSBT
+    function setScore(address user, uint16 newScore) external override onlyOwner {
         uint256 tokenId = mintIfNeeded(user);
         _scoreOf[tokenId] = newScore;
         emit ScoreUpdated(user, newScore);

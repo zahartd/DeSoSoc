@@ -14,11 +14,18 @@ import {CreditScoreSBT} from "../src/tokens/CreditScoreSBT.sol";
 import {BlackBadgeSBT} from "../src/tokens/BlackBadgeSBT.sol";
 import {Errors} from "../src/utils/Errors.sol";
 
+contract LendingPoolV2 is LendingPool {
+    function version() external pure returns (uint256) {
+        return 2;
+    }
+}
+
 contract LendingPoolTest is Test {
     address internal admin = address(this);
     address internal alice = address(0xA11CE);
     address internal bob = address(0xB0B);
     address internal treasury = address(0xBEEF);
+    address internal keeper = address(0xC0FFEE);
 
     ERC20Mock internal token;
     CreditScoreSBT internal scoreSbt;
@@ -114,11 +121,19 @@ contract LendingPoolTest is Test {
     function test_default_marksDefaulter_and_blocksBorrow() public {
         vm.warp(1_000);
 
+        uint256 collateralAmount = 150 ether;
+
         vm.prank(bob);
-        pool.borrow(100 ether, 150 ether, 1 days);
+        pool.borrow(100 ether, collateralAmount, 1 days);
 
         vm.warp(1_000 + 1 days + 1);
+        uint256 expectedBounty = (collateralAmount * pool.defaultBountyBps()) / 10_000;
+        uint256 keeperBalBefore = token.balanceOf(keeper);
+
+        vm.prank(keeper);
         pool.markDefault(bob);
+
+        assertEq(token.balanceOf(keeper), keeperBalBefore + expectedBounty);
 
         assertTrue(badgeSbt.hasBadge(bob));
         assertTrue(riskEngine.isDefaulter(bob));
@@ -126,6 +141,38 @@ contract LendingPoolTest is Test {
         vm.prank(bob);
         vm.expectRevert(Errors.BorrowNotAllowed.selector);
         pool.borrow(1 ether, 0, 7 days);
+    }
+
+    function test_proxyUpgrade_preservesState_and_exposesNewLogic() public {
+        vm.expectRevert();
+        LendingPoolV2(address(pool)).version();
+
+        vm.warp(1_000);
+        vm.prank(alice);
+        pool.borrow(100 ether, 150 ether, 7 days);
+
+        LendingPool.Loan memory loanBefore = pool.getLoan(alice);
+        uint256 lockedBefore = pool.lockedCollateral();
+
+        LendingPoolV2 newImpl = new LendingPoolV2();
+
+        vm.prank(alice);
+        vm.expectRevert();
+        pool.upgradeToAndCall(address(newImpl), "");
+
+        pool.upgradeToAndCall(address(newImpl), "");
+
+        assertEq(LendingPoolV2(address(pool)).version(), 2);
+        assertEq(pool.owner(), admin);
+        assertEq(pool.lockedCollateral(), lockedBefore);
+
+        LendingPool.Loan memory loanAfter = pool.getLoan(alice);
+        assertEq(loanAfter.principal, loanBefore.principal);
+        assertEq(loanAfter.collateral, loanBefore.collateral);
+        assertEq(loanAfter.repaid, loanBefore.repaid);
+        assertEq(loanAfter.start, loanBefore.start);
+        assertEq(loanAfter.due, loanBefore.due);
+        assertEq(loanAfter.active, loanBefore.active);
     }
 
     function test_withdraw_respectsLockedCollateral() public {

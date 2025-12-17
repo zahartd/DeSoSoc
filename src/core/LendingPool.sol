@@ -35,6 +35,7 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     uint16 public protocolFeeBps;
     uint16 public originationFeeBps;
     address public treasury;
+    uint16 public defaultBountyBps;
 
     uint256 public lockedCollateral;
 
@@ -74,6 +75,8 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     event RiskEngineUpdated(address riskEngine);
     event InterestModelUpdated(address interestModel);
     event FeesUpdated(uint16 protocolFeeBps, uint16 originationFeeBps, address treasury);
+    event DefaultBountyUpdated(uint16 defaultBountyBps);
+    event DefaultBountyPaid(address indexed borrower, address indexed caller, uint256 bounty);
 
     constructor() {
         _disableInitializers();
@@ -102,15 +105,17 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
         badgeSbt = IBlackBadgeSBT(badgeSbt_);
         interestModel = IInterestModel(interestModel_);
 
-        scoreIncrement = 250; // v0 example
+        scoreIncrement = 250;
         treasury = treasury_;
 
         protocolFeeBps = 1000; // 10% of interest
         originationFeeBps = 100; // 1% of principal
+        defaultBountyBps = 50; // 0.5% of collateral to incentivize keepers
 
         emit RiskEngineUpdated(riskEngine_);
         emit InterestModelUpdated(interestModel_);
         emit FeesUpdated(protocolFeeBps, originationFeeBps, treasury_);
+        emit DefaultBountyUpdated(defaultBountyBps);
     }
 
     function setRiskEngine(address newRiskEngine) external onlyOwner {
@@ -138,6 +143,12 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
         treasury = newTreasury;
 
         emit FeesUpdated(newProtocolFeeBps, newOriginationFeeBps, newTreasury);
+    }
+
+    function setDefaultBountyBps(uint16 newDefaultBountyBps) external onlyOwner {
+        if (newDefaultBountyBps > BPS) revert Errors.InvalidBps();
+        defaultBountyBps = newDefaultBountyBps;
+        emit DefaultBountyUpdated(newDefaultBountyBps);
     }
 
     function pause() external onlyOwner {
@@ -255,7 +266,12 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
         loan.active = false;
 
         if (loan.collateral != 0) {
-            lockedCollateral -= loan.collateral; // seized collateral becomes pool liquidity
+            lockedCollateral -= loan.collateral;
+            uint256 bounty = _feeAmount(loan.collateral, defaultBountyBps);
+            if (bounty != 0) {
+                token.safeTransfer(msg.sender, bounty);
+                emit DefaultBountyPaid(borrower, msg.sender, bounty);
+            }
         }
 
         badgeSbt.mintBadge(borrower);

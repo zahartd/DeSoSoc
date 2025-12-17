@@ -155,7 +155,7 @@ contract LendingPoolTest is Test {
         assertEq(scoreSbt.scoreOf(alice), 800);
         assertEq(riskEngine.collateralRatioBps(alice), 0);
 
-        uint256 limit = riskEngine.maxBorrowNoCollateral();
+        uint256 limit = riskEngine.MAX_BORROW_NO_COLLATERAL();
 
         vm.prank(alice);
         vm.expectRevert(Errors.BorrowNotAllowed.selector);

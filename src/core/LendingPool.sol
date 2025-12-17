@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
@@ -51,9 +52,17 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     bool private locked;
 
     modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() internal {
         if (locked) revert Errors.Reentrancy();
         locked = true;
-        _;
+    }
+
+    function _nonReentrantAfter() internal {
         locked = false;
     }
 
@@ -274,7 +283,7 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
         uint256 next = uint256(s) + uint256(scoreIncrement);
         if (next > SCORE_FREE) next = SCORE_FREE;
 
-        scoreSbt.setScore(borrower, uint16(next));
+        scoreSbt.setScore(borrower, SafeCast.toUint16(next));
     }
 
     function _feeAmount(uint256 amount, uint16 feeBps) internal pure returns (uint256) {

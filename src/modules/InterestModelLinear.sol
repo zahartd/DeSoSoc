@@ -12,18 +12,18 @@ contract InterestModelLinear is IInterestModel {
     uint256 internal constant BPS = 10_000;
 
     /// @notice Base APR in basis points.
-    uint16 public immutable aprBps;
+    uint16 public immutable APR_BPS;
 
     /// @notice Penalty APR in basis points (applies after due date).
-    uint16 public immutable penaltyAprBps;
+    uint16 public immutable PENALTY_APR_BPS;
 
     constructor(uint16 aprBps_, uint16 penaltyAprBps_) {
-        aprBps = aprBps_;
-        penaltyAprBps = penaltyAprBps_;
+        APR_BPS = aprBps_;
+        PENALTY_APR_BPS = penaltyAprBps_;
     }
 
     function debt(uint256 principal, uint64 startTs, uint64 nowTs) external view returns (uint256) {
-        return _debtAtRate(principal, startTs, nowTs, aprBps);
+        return _debtAtRate(principal, startTs, nowTs, APR_BPS);
     }
 
     function debtWithPenalty(uint256 principal, uint64 startTs, uint64 dueTs, uint64 nowTs)
@@ -35,15 +35,15 @@ contract InterestModelLinear is IInterestModel {
         if (nowTs <= startTs) return principal;
 
         if (nowTs <= dueTs) {
-            return _debtAtRate(principal, startTs, nowTs, aprBps);
+            return _debtAtRate(principal, startTs, nowTs, APR_BPS);
         }
 
         uint64 effectiveDue = dueTs > startTs ? dueTs : startTs;
         uint256 normalDt = uint256(effectiveDue - startTs);
         uint256 penaltyDt = uint256(nowTs - effectiveDue);
 
-        uint256 normalInterest = _interest(principal, aprBps, normalDt);
-        uint256 penaltyInterest = _interest(principal, penaltyAprBps, penaltyDt);
+        uint256 normalInterest = _interest(principal, APR_BPS, normalDt);
+        uint256 penaltyInterest = _interest(principal, PENALTY_APR_BPS, penaltyDt);
 
         return principal + normalInterest + penaltyInterest;
     }
@@ -65,4 +65,3 @@ contract InterestModelLinear is IInterestModel {
         return Math.mulDiv(principal, uint256(rateBps) * dt, YEAR * BPS);
     }
 }
-

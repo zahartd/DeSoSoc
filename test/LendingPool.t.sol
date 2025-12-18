@@ -40,7 +40,7 @@ contract LendingPoolTest is Test {
         scoreSbt = new CreditScoreSBT(admin);
         badgeSbt = new BlackBadgeSBT(admin);
         riskEngine = new RiskEngine(address(scoreSbt), address(badgeSbt), 1_000 ether);
-        interestModel = new InterestModelLinear(1000, 2000); // 10% APR, 20% penalty APR
+        interestModel = new InterestModelLinear(1000, 2000);
 
         LendingPool impl = new LendingPool();
         bytes memory initData = abi.encodeCall(
@@ -61,7 +61,7 @@ contract LendingPoolTest is Test {
         scoreSbt.transferOwnership(address(pool));
         badgeSbt.transferOwnership(address(pool));
 
-        pool.setFees(1000, 100, treasury); // 10% of interest, 1% origination
+        pool.setFees(1000, 100, treasury);
 
         token.mint(admin, 1_000 ether);
         token.approve(address(pool), type(uint256).max);
@@ -256,29 +256,9 @@ contract LendingPoolTest is Test {
 
         vm.prank(alice);
         vm.expectRevert();
-        pool.setConfig(
-            1000, // scoreIncrement
-            1000,
-            100,
-            treasury,
-            50,
-            uint32(24 hours),
-            300, // scoreFree
-            6 hours,
-            48 hours
-        );
+        pool.setConfig(1000, 1000, 100, treasury, 50, uint32(24 hours), 300, 6 hours, 48 hours);
 
-        pool.setConfig(
-            1000, // scoreIncrement
-            1000,
-            100,
-            treasury,
-            50,
-            uint32(24 hours),
-            300, // scoreFree
-            6 hours,
-            48 hours
-        );
+        pool.setConfig(1000, 1000, 100, treasury, 50, uint32(24 hours), 300, 6 hours, 48 hours);
         assertEq(pool.minDuration(), 6 hours);
         assertEq(pool.maxDuration(), 48 hours);
 

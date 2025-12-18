@@ -37,7 +37,7 @@ Core (`src/core/LendingPool.sol`) отвечает за:
 - `src/tokens/BlackBadgeSBT.sol` — “чёрная метка” дефолтера (один токен на адрес), mint при дефолте.
 
 Soulbound‑поведение реализовано практично для v0: трансферы и approvals отключены (revert).
-EIP‑5192 не реализован (можно добавить позже отдельно, если понадобится совместимость).
+Дополнительно поддержан **EIP‑5192 (Minimal Soulbound NFTs)**: `locked(tokenId)` + событие `Locked(tokenId)` и `supportsInterface`.
 
 Важно: SBT принадлежат `LendingPool` (через `transferOwnership` после деплоя), чтобы core мог mint/update.
 

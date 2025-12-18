@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {Test} from "forge-std/Test.sol";
 
 import {BlackBadgeSBT} from "../../src/tokens/BlackBadgeSBT.sol";
+import {IERC5192} from "../../src/interfaces/IERC5192.sol";
 import {Errors} from "../../src/utils/Errors.sol";
 
 contract BlackBadgeSBTTest is Test {
@@ -14,14 +15,11 @@ contract BlackBadgeSBTTest is Test {
     address internal bob = address(0xB0B);
 
     event BadgeMinted(address indexed user, uint256 indexed tokenId);
+    event Locked(uint256 tokenId);
 
     function setUp() public {
         sbt = new BlackBadgeSBT(owner);
     }
-
-    // =========================================================================
-    // Constructor
-    // =========================================================================
 
     function test_constructor_setsOwner() public view {
         assertEq(sbt.owner(), owner);
@@ -35,10 +33,6 @@ contract BlackBadgeSBTTest is Test {
     function test_constructor_initializesNextTokenId() public view {
         assertEq(sbt.nextTokenId(), 1);
     }
-
-    // =========================================================================
-    // hasBadge
-    // =========================================================================
 
     function test_hasBadge_returnsFalse_whenNoBadge() public view {
         assertFalse(sbt.hasBadge(alice));
@@ -60,10 +54,6 @@ contract BlackBadgeSBTTest is Test {
         assertTrue(sbt.hasBadge(alice));
     }
 
-    // =========================================================================
-    // mintBadge
-    // =========================================================================
-
     function test_mintBadge_onlyOwner() public {
         vm.prank(alice);
         vm.expectRevert();
@@ -78,6 +68,9 @@ contract BlackBadgeSBTTest is Test {
     function test_mintBadge_mintsNewToken() public {
         vm.expectEmit(true, true, false, false);
         emit BadgeMinted(alice, 1);
+
+        vm.expectEmit(false, false, false, true);
+        emit Locked(1);
 
         uint256 tokenId = sbt.mintBadge(alice);
 
@@ -106,10 +99,6 @@ contract BlackBadgeSBTTest is Test {
         assertEq(sbt.nextTokenId(), 2);
     }
 
-    // =========================================================================
-    // tokenIdOf
-    // =========================================================================
-
     function test_tokenIdOf_returnsZero_whenNoBadge() public view {
         assertEq(sbt.tokenIdOf(alice), 0);
     }
@@ -118,10 +107,6 @@ contract BlackBadgeSBTTest is Test {
         sbt.mintBadge(alice);
         assertEq(sbt.tokenIdOf(alice), 1);
     }
-
-    // =========================================================================
-    // Soulbound: transfers disabled
-    // =========================================================================
 
     function test_transfer_reverts() public {
         sbt.mintBadge(alice);
@@ -147,10 +132,6 @@ contract BlackBadgeSBTTest is Test {
         sbt.safeTransferFrom(alice, bob, 1, "");
     }
 
-    // =========================================================================
-    // Soulbound: approvals disabled
-    // =========================================================================
-
     function test_approve_reverts() public {
         sbt.mintBadge(alice);
 
@@ -163,5 +144,12 @@ contract BlackBadgeSBTTest is Test {
         vm.prank(alice);
         vm.expectRevert(Errors.Unauthorized.selector);
         sbt.setApprovalForAll(bob, true);
+    }
+
+    function test_erc5192_locked_and_supportsInterface() public {
+        sbt.mintBadge(alice);
+
+        assertTrue(sbt.supportsInterface(type(IERC5192).interfaceId));
+        assertTrue(sbt.locked(1));
     }
 }

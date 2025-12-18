@@ -3,14 +3,16 @@ pragma solidity ^0.8.20;
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 import {ICreditScoreSBT} from "../interfaces/ICreditScoreSBT.sol";
+import {IERC5192} from "../interfaces/IERC5192.sol";
 import {Errors} from "../utils/Errors.sol";
 
 /// @title CreditScoreSBT
 /// @notice Non-transferable ERC-721 token storing a per-address credit score (uint16).
 /// @dev Only the owner can mint/update scores. Transfers and approvals are disabled (soulbound).
-contract CreditScoreSBT is ICreditScoreSBT, ERC721, Ownable {
+contract CreditScoreSBT is ICreditScoreSBT, IERC5192, ERC721, Ownable {
     uint256 public nextTokenId;
 
     mapping(address user => uint256 tokenId) internal _tokenIdOf;
@@ -21,6 +23,16 @@ contract CreditScoreSBT is ICreditScoreSBT, ERC721, Ownable {
 
     constructor(address initialOwner) ERC721("CreditScore", "CSCORE") Ownable(initialOwner) {
         nextTokenId = 1;
+    }
+
+    /// @inheritdoc IERC5192
+    function locked(uint256 tokenId) external view returns (bool) {
+        if (_ownerOf(tokenId) == address(0)) revert ERC721NonexistentToken(tokenId);
+        return true;
+    }
+
+    function supportsInterface(bytes4 interfaceId) public view override(ERC721, IERC165) returns (bool) {
+        return interfaceId == type(IERC5192).interfaceId || super.supportsInterface(interfaceId);
     }
 
     /// @inheritdoc ICreditScoreSBT
@@ -59,6 +71,7 @@ contract CreditScoreSBT is ICreditScoreSBT, ERC721, Ownable {
         _safeMint(user, tokenId);
 
         emit ScoreMinted(user, tokenId);
+        emit Locked(tokenId);
     }
 
     /// @inheritdoc ICreditScoreSBT

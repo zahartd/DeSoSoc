@@ -3,14 +3,16 @@ pragma solidity ^0.8.20;
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 import {Errors} from "../utils/Errors.sol";
 import {IBlackBadgeSBT} from "../interfaces/IBlackBadgeSBT.sol";
+import {IERC5192} from "../interfaces/IERC5192.sol";
 
 /// @title BlackBadgeSBT
 /// @notice Non-transferable ERC-721 token representing a "black badge" (default/blacklist mark).
 /// @dev Only the owner can mint badges. Transfers are disabled (soulbound).
-contract BlackBadgeSBT is IBlackBadgeSBT, ERC721, Ownable {
+contract BlackBadgeSBT is IBlackBadgeSBT, IERC5192, ERC721, Ownable {
     /// @notice Next token ID to be minted.
     uint256 public nextTokenId;
 
@@ -26,6 +28,16 @@ contract BlackBadgeSBT is IBlackBadgeSBT, ERC721, Ownable {
         nextTokenId = 1;
     }
 
+    /// @inheritdoc IERC5192
+    function locked(uint256 tokenId) external view returns (bool) {
+        if (_ownerOf(tokenId) == address(0)) revert ERC721NonexistentToken(tokenId);
+        return true;
+    }
+
+    function supportsInterface(bytes4 interfaceId) public view override(ERC721, IERC165) returns (bool) {
+        return interfaceId == type(IERC5192).interfaceId || super.supportsInterface(interfaceId);
+    }
+
     function hasBadge(address user) external view returns (bool) {
         return _tokenIdOf[user] != 0;
     }
@@ -33,11 +45,9 @@ contract BlackBadgeSBT is IBlackBadgeSBT, ERC721, Ownable {
     function mintBadge(address user) external onlyOwner returns (uint256 tokenId) {
         if (user == address(0)) revert Errors.InvalidAddress(user);
 
-        // If user already has a badge, return existing token ID
         tokenId = _tokenIdOf[user];
         if (tokenId != 0) return tokenId;
 
-        // Mint new badge
         tokenId = nextTokenId;
         nextTokenId = tokenId + 1;
 
@@ -45,6 +55,7 @@ contract BlackBadgeSBT is IBlackBadgeSBT, ERC721, Ownable {
         _safeMint(user, tokenId);
 
         emit BadgeMinted(user, tokenId);
+        emit Locked(tokenId);
     }
 
     /// @notice Returns the token ID owned by a user (0 if none).
@@ -58,7 +69,6 @@ contract BlackBadgeSBT is IBlackBadgeSBT, ERC721, Ownable {
     function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
         address from = _ownerOf(tokenId);
 
-        // Allow minting (from == address(0)), block all other transfers
         if (from != address(0)) {
             revert Errors.Unauthorized();
         }

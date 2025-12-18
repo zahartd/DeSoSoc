@@ -27,9 +27,9 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     uint64 internal constant DEFAULT_MIN_DURATION = 4 hours;
     uint64 internal constant DEFAULT_MAX_DURATION = 72 hours;
     uint16 internal constant DEFAULT_SCORE_INCREMENT = 250;
-    uint16 internal constant DEFAULT_PROTOCOL_FEE_BPS = 1000; // 10% of interest
-    uint16 internal constant DEFAULT_ORIGINATION_FEE_BPS = 100; // 1% of principal
-    uint16 internal constant DEFAULT_DEFAULT_BOUNTY_BPS = 50; // 0.5% of collateral to incentivize keepers
+    uint16 internal constant DEFAULT_PROTOCOL_FEE_BPS = 1000;
+    uint16 internal constant DEFAULT_ORIGINATION_FEE_BPS = 100;
+    uint16 internal constant DEFAULT_DEFAULT_BOUNTY_BPS = 50;
     uint32 internal constant DEFAULT_GRACE_PERIOD = 24 hours;
 
     IERC20 public token;

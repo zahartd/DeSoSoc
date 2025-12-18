@@ -10,8 +10,8 @@ import {IRiskEngine} from "../interfaces/IRiskEngine.sol";
 /// @title RiskEngine
 /// @notice v0 risk engine: score-based collateral ratio + defaulter badge gate.
 contract RiskEngine is IRiskEngine {
-    uint16 internal constant SCORE_FREE = 800; // score >= this => 0% collateral tier
-    uint16 internal constant MAX_RATIO_BPS = 15_000; // 150%
+    uint16 internal constant SCORE_FREE = 800;
+    uint16 internal constant MAX_RATIO_BPS = 15_000;
 
     ICreditScoreSBT public immutable SCORE_SBT;
     IBlackBadgeSBT public immutable BADGE_SBT;
@@ -45,7 +45,7 @@ contract RiskEngine is IRiskEngine {
 
         uint256 remaining = uint256(SCORE_FREE - score);
         uint256 numerator = uint256(MAX_RATIO_BPS) * remaining;
-        uint256 ratio = (numerator + SCORE_FREE - 1) / SCORE_FREE; // ceil
+        uint256 ratio = (numerator + SCORE_FREE - 1) / SCORE_FREE;
         return SafeCast.toUint16(ratio);
     }
 }

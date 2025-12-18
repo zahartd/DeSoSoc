@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {Test} from "forge-std/Test.sol";
 
 import {CreditScoreSBT} from "../../src/tokens/CreditScoreSBT.sol";
+import {IERC5192} from "../../src/interfaces/IERC5192.sol";
 import {Errors} from "../../src/utils/Errors.sol";
 
 contract CreditScoreSBTTest is Test {
@@ -12,6 +13,8 @@ contract CreditScoreSBTTest is Test {
     address internal owner = address(this);
     address internal alice = address(0xA11CE);
     address internal bob = address(0xB0B);
+
+    event Locked(uint256 tokenId);
 
     function setUp() public {
         sbt = new CreditScoreSBT(owner);
@@ -58,5 +61,16 @@ contract CreditScoreSBTTest is Test {
         vm.prank(alice);
         vm.expectRevert(Errors.Unauthorized.selector);
         sbt.approve(bob, 1);
+    }
+
+    function test_erc5192_locked_and_supportsInterface() public {
+        vm.expectEmit(false, false, false, true);
+        emit Locked(1);
+
+        uint256 tokenId = sbt.mintIfNeeded(alice);
+        assertEq(tokenId, 1);
+
+        assertTrue(sbt.supportsInterface(type(IERC5192).interfaceId));
+        assertTrue(sbt.locked(tokenId));
     }
 }

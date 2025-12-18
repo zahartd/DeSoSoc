@@ -71,7 +71,7 @@ contract BlackBadgeSBTTest is Test {
     }
 
     function test_mintBadge_revertsOnZeroAddress() public {
-        vm.expectRevert(Errors.InvalidAddress.selector);
+        vm.expectPartialRevert(Errors.InvalidAddress.selector);
         sbt.mintBadge(address(0));
     }
 
@@ -165,4 +165,3 @@ contract BlackBadgeSBTTest is Test {
         sbt.setApprovalForAll(bob, true);
     }
 }
-

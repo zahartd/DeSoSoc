@@ -31,7 +31,7 @@ contract BlackBadgeSBT is IBlackBadgeSBT, ERC721, Ownable {
     }
 
     function mintBadge(address user) external onlyOwner returns (uint256 tokenId) {
-        if (user == address(0)) revert Errors.InvalidAddress();
+        if (user == address(0)) revert Errors.InvalidAddress(user);
 
         // If user already has a badge, return existing token ID
         tokenId = _tokenIdOf[user];

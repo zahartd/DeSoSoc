@@ -92,7 +92,7 @@ contract LendingPoolTest is Test {
         uint256 aliceBalBefore = token.balanceOf(alice);
 
         vm.prank(alice);
-        pool.borrow(100 ether, 150 ether, 7 days);
+        pool.borrow(100 ether, 150 ether, 48 hours);
 
         assertEq(pool.lockedCollateral(), 150 ether);
         assertEq(token.balanceOf(treasury), 1 ether);
@@ -111,11 +111,11 @@ contract LendingPoolTest is Test {
         assertEq(riskEngine.collateralRatioBps(alice), 10_313);
 
         vm.prank(alice);
-        vm.expectRevert(Errors.LowCollateral.selector);
-        pool.borrow(100 ether, 103 ether, 7 days);
+        vm.expectPartialRevert(Errors.LowCollateral.selector);
+        pool.borrow(100 ether, 103 ether, 48 hours);
 
         vm.prank(alice);
-        pool.borrow(100 ether, 104 ether, 7 days);
+        pool.borrow(100 ether, 104 ether, 48 hours);
     }
 
     function test_default_marksDefaulter_and_blocksBorrow() public {
@@ -124,9 +124,14 @@ contract LendingPoolTest is Test {
         uint256 collateralAmount = 150 ether;
 
         vm.prank(bob);
-        pool.borrow(100 ether, collateralAmount, 1 days);
+        pool.borrow(100 ether, collateralAmount, 24 hours);
 
-        vm.warp(1_000 + 1 days + 1);
+        vm.warp(1_000 + 24 hours + 1);
+        vm.prank(keeper);
+        vm.expectPartialRevert(Errors.NotPastDue.selector);
+        pool.markDefault(bob);
+
+        vm.warp(1_000 + 24 hours + 24 hours + 1);
         uint256 expectedBounty = (collateralAmount * pool.defaultBountyBps()) / 10_000;
         uint256 keeperBalBefore = token.balanceOf(keeper);
 
@@ -139,8 +144,8 @@ contract LendingPoolTest is Test {
         assertTrue(riskEngine.isDefaulter(bob));
 
         vm.prank(bob);
-        vm.expectRevert(Errors.BorrowNotAllowed.selector);
-        pool.borrow(1 ether, 0, 7 days);
+        vm.expectPartialRevert(Errors.BorrowNotAllowed.selector);
+        pool.borrow(1 ether, 0, 48 hours);
     }
 
     function test_proxyUpgrade_preservesState_and_exposesNewLogic() public {
@@ -149,7 +154,7 @@ contract LendingPoolTest is Test {
 
         vm.warp(1_000);
         vm.prank(alice);
-        pool.borrow(100 ether, 150 ether, 7 days);
+        pool.borrow(100 ether, 150 ether, 48 hours);
 
         LendingPool.Loan memory loanBefore = pool.getLoan(alice);
         uint256 lockedBefore = pool.lockedCollateral();
@@ -179,9 +184,9 @@ contract LendingPoolTest is Test {
         vm.warp(1_000);
 
         vm.prank(alice);
-        pool.borrow(100 ether, 150 ether, 7 days);
+        pool.borrow(100 ether, 150 ether, 48 hours);
 
-        vm.expectRevert(Errors.InsufficientLiquidity.selector);
+        vm.expectPartialRevert(Errors.InsufficientLiquidity.selector);
         pool.withdrawLiquidity(901 ether, admin);
 
         pool.withdrawLiquidity(900 ether, admin);
@@ -192,7 +197,7 @@ contract LendingPoolTest is Test {
 
         for (uint256 i = 0; i < 4; i++) {
             vm.prank(alice);
-            pool.borrow(10 ether, 15 ether, 7 days);
+            pool.borrow(10 ether, 15 ether, 48 hours);
 
             uint256 debt = pool.getDebt(alice);
             vm.prank(alice);
@@ -205,11 +210,11 @@ contract LendingPoolTest is Test {
         uint256 limit = riskEngine.MAX_BORROW_NO_COLLATERAL();
 
         vm.prank(alice);
-        vm.expectRevert(Errors.BorrowNotAllowed.selector);
-        pool.borrow(limit + 1, 0, 7 days);
+        vm.expectPartialRevert(Errors.BorrowNotAllowed.selector);
+        pool.borrow(limit + 1, 0, 48 hours);
 
         vm.prank(alice);
-        pool.borrow(limit, 0, 7 days);
+        pool.borrow(limit, 0, 48 hours);
     }
 
     function test_pause_blocksBorrow_and_repay() public {
@@ -219,12 +224,12 @@ contract LendingPoolTest is Test {
 
         vm.prank(alice);
         vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
-        pool.borrow(1 ether, 2 ether, 7 days);
+        pool.borrow(1 ether, 2 ether, 48 hours);
 
         pool.unpause();
 
         vm.prank(alice);
-        pool.borrow(10 ether, 15 ether, 7 days);
+        pool.borrow(10 ether, 15 ether, 48 hours);
 
         pool.pause();
 
@@ -232,5 +237,46 @@ contract LendingPoolTest is Test {
         vm.prank(alice);
         vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
         pool.repay(debt);
+    }
+
+    function test_borrow_revertsOnInvalidDuration() public {
+        vm.warp(1_000);
+
+        vm.prank(alice);
+        vm.expectPartialRevert(Errors.InvalidDuration.selector);
+        pool.borrow(100 ether, 150 ether, 1 hours);
+
+        vm.prank(alice);
+        vm.expectPartialRevert(Errors.InvalidDuration.selector);
+        pool.borrow(100 ether, 150 ether, 73 hours);
+    }
+
+    function test_ownerCanUpdateDurationBounds_and_scoreFree() public {
+        vm.warp(1_000);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        pool.setDurationBounds(6 hours, 48 hours);
+
+        pool.setDurationBounds(6 hours, 48 hours);
+        assertEq(pool.minDuration(), 6 hours);
+        assertEq(pool.maxDuration(), 48 hours);
+
+        vm.prank(alice);
+        vm.expectPartialRevert(Errors.InvalidDuration.selector);
+        pool.borrow(1 ether, 2 ether, 5 hours);
+
+        pool.setScoreIncrement(1000);
+        pool.setScoreFree(300);
+        assertEq(pool.scoreFree(), 300);
+
+        vm.prank(alice);
+        pool.borrow(10 ether, 15 ether, 6 hours);
+
+        uint256 debt = pool.getDebt(alice);
+        vm.prank(alice);
+        pool.repay(debt);
+
+        assertEq(scoreSbt.scoreOf(alice), 300);
     }
 }

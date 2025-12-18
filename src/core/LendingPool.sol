@@ -23,7 +23,9 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     using SafeERC20 for IERC20;
 
     uint16 internal constant BPS = 10_000;
-    uint16 internal constant SCORE_FREE = 800;
+    uint16 internal constant DEFAULT_SCORE_FREE = 800;
+    uint64 internal constant DEFAULT_MIN_DURATION = 4 hours;
+    uint64 internal constant DEFAULT_MAX_DURATION = 72 hours;
 
     IERC20 public token;
     IRiskEngine public riskEngine;
@@ -36,6 +38,7 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     uint16 public originationFeeBps;
     address public treasury;
     uint16 public defaultBountyBps;
+    uint32 public gracePeriod;
 
     uint256 public lockedCollateral;
 
@@ -51,6 +54,9 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     mapping(address borrower => Loan loan) public loanOf;
 
     bool private locked;
+    uint16 public scoreFree;
+    uint64 public minDuration;
+    uint64 public maxDuration;
 
     modifier nonReentrant() {
         _nonReentrantBefore();
@@ -77,6 +83,8 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     event FeesUpdated(uint16 protocolFeeBps, uint16 originationFeeBps, address treasury);
     event DefaultBountyUpdated(uint16 defaultBountyBps);
     event DefaultBountyPaid(address indexed borrower, address indexed caller, uint256 bounty);
+    event DurationBoundsUpdated(uint64 minDuration, uint64 maxDuration);
+    event ScoreFreeUpdated(uint16 scoreFree);
 
     constructor() {
         _disableInitializers();
@@ -91,10 +99,13 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
         address interestModel_,
         address treasury_
     ) external initializer {
-        if (
-            owner_ == address(0) || token_ == address(0) || riskEngine_ == address(0) || scoreSbt_ == address(0)
-                || badgeSbt_ == address(0) || interestModel_ == address(0) || treasury_ == address(0)
-        ) revert Errors.InvalidAddress();
+        if (owner_ == address(0)) revert Errors.InvalidAddress(owner_);
+        if (token_ == address(0)) revert Errors.InvalidAddress(token_);
+        if (riskEngine_ == address(0)) revert Errors.InvalidAddress(riskEngine_);
+        if (scoreSbt_ == address(0)) revert Errors.InvalidAddress(scoreSbt_);
+        if (badgeSbt_ == address(0)) revert Errors.InvalidAddress(badgeSbt_);
+        if (interestModel_ == address(0)) revert Errors.InvalidAddress(interestModel_);
+        if (treasury_ == address(0)) revert Errors.InvalidAddress(treasury_);
 
         __Ownable_init(owner_);
         __Pausable_init();
@@ -111,21 +122,27 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
         protocolFeeBps = 1000; // 10% of interest
         originationFeeBps = 100; // 1% of principal
         defaultBountyBps = 50; // 0.5% of collateral to incentivize keepers
+        gracePeriod = 24 hours;
+        scoreFree = DEFAULT_SCORE_FREE;
+        minDuration = DEFAULT_MIN_DURATION;
+        maxDuration = DEFAULT_MAX_DURATION;
 
         emit RiskEngineUpdated(riskEngine_);
         emit InterestModelUpdated(interestModel_);
         emit FeesUpdated(protocolFeeBps, originationFeeBps, treasury_);
         emit DefaultBountyUpdated(defaultBountyBps);
+        emit DurationBoundsUpdated(minDuration, maxDuration);
+        emit ScoreFreeUpdated(scoreFree);
     }
 
     function setRiskEngine(address newRiskEngine) external onlyOwner {
-        if (newRiskEngine == address(0)) revert Errors.InvalidAddress();
+        if (newRiskEngine == address(0)) revert Errors.InvalidAddress(newRiskEngine);
         riskEngine = IRiskEngine(newRiskEngine);
         emit RiskEngineUpdated(newRiskEngine);
     }
 
     function setInterestModel(address newInterestModel) external onlyOwner {
-        if (newInterestModel == address(0)) revert Errors.InvalidAddress();
+        if (newInterestModel == address(0)) revert Errors.InvalidAddress(newInterestModel);
         interestModel = IInterestModel(newInterestModel);
         emit InterestModelUpdated(newInterestModel);
     }
@@ -135,8 +152,9 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     }
 
     function setFees(uint16 newProtocolFeeBps, uint16 newOriginationFeeBps, address newTreasury) external onlyOwner {
-        if (newProtocolFeeBps > BPS || newOriginationFeeBps > BPS) revert Errors.InvalidBps();
-        if (newTreasury == address(0)) revert Errors.InvalidAddress();
+        if (newProtocolFeeBps > BPS) revert Errors.InvalidBps(newProtocolFeeBps, BPS);
+        if (newOriginationFeeBps > BPS) revert Errors.InvalidBps(newOriginationFeeBps, BPS);
+        if (newTreasury == address(0)) revert Errors.InvalidAddress(newTreasury);
 
         protocolFeeBps = newProtocolFeeBps;
         originationFeeBps = newOriginationFeeBps;
@@ -146,9 +164,29 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     }
 
     function setDefaultBountyBps(uint16 newDefaultBountyBps) external onlyOwner {
-        if (newDefaultBountyBps > BPS) revert Errors.InvalidBps();
+        if (newDefaultBountyBps > BPS) revert Errors.InvalidBps(newDefaultBountyBps, BPS);
         defaultBountyBps = newDefaultBountyBps;
         emit DefaultBountyUpdated(newDefaultBountyBps);
+    }
+
+    function setGracePeriod(uint32 newGracePeriod) external onlyOwner {
+        gracePeriod = newGracePeriod;
+    }
+
+    function setDurationBounds(uint64 newMinDuration, uint64 newMaxDuration) external onlyOwner {
+        if (newMinDuration == 0 || newMinDuration > newMaxDuration) {
+            revert Errors.InvalidDurationBounds(newMinDuration, newMaxDuration);
+        }
+
+        minDuration = newMinDuration;
+        maxDuration = newMaxDuration;
+        emit DurationBoundsUpdated(newMinDuration, newMaxDuration);
+    }
+
+    function setScoreFree(uint16 newScoreFree) external onlyOwner {
+        if (newScoreFree == 0) revert Errors.InvalidScoreFree(newScoreFree);
+        scoreFree = newScoreFree;
+        emit ScoreFreeUpdated(newScoreFree);
     }
 
     function pause() external onlyOwner {
@@ -164,36 +202,40 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     }
 
     function depositLiquidity(uint256 amount) external onlyOwner whenNotPaused nonReentrant {
-        if (amount == 0) revert Errors.InvalidAmount();
+        if (amount == 0) revert Errors.InvalidAmount(amount);
         token.safeTransferFrom(msg.sender, address(this), amount);
         emit LiquidityDeposited(msg.sender, amount);
     }
 
     function withdrawLiquidity(uint256 amount, address to) external onlyOwner whenNotPaused nonReentrant {
-        if (to == address(0)) revert Errors.InvalidAddress();
-        if (amount == 0) revert Errors.InvalidAmount();
-        if (availableLiquidity() < amount) revert Errors.InsufficientLiquidity();
+        if (to == address(0)) revert Errors.InvalidAddress(to);
+        if (amount == 0) revert Errors.InvalidAmount(amount);
+        uint256 available = availableLiquidity();
+        if (available < amount) revert Errors.InsufficientLiquidity(available, amount);
         token.safeTransfer(to, amount);
         emit LiquidityWithdrawn(to, amount);
     }
 
     function borrow(uint256 amount, uint256 collateralAmount, uint64 duration) external whenNotPaused nonReentrant {
-        if (amount == 0) revert Errors.InvalidAmount();
-        if (duration == 0) revert Errors.InvalidDuration();
+        if (amount == 0) revert Errors.InvalidAmount(amount);
+        uint64 minD = minDuration;
+        uint64 maxD = maxDuration;
+        if (duration < minD || duration > maxD) revert Errors.InvalidDuration(duration, minD, maxD);
 
         Loan storage loan = loanOf[msg.sender];
-        if (loan.active) revert Errors.LoanAlreadyActive();
+        if (loan.active) revert Errors.LoanAlreadyActive(msg.sender);
 
         uint16 ratioBps = riskEngine.collateralRatioBps(msg.sender);
         uint256 maxBorrow = riskEngine.maxBorrow(msg.sender);
-        if (amount > maxBorrow) revert Errors.BorrowNotAllowed();
+        if (amount > maxBorrow) revert Errors.BorrowNotAllowed(msg.sender, amount, maxBorrow);
 
         if (ratioBps != 0) {
             uint256 required = Math.mulDiv(amount, ratioBps, BPS, Math.Rounding.Ceil);
-            if (collateralAmount < required) revert Errors.LowCollateral();
+            if (collateralAmount < required) revert Errors.LowCollateral(collateralAmount, required);
         }
 
-        if (availableLiquidity() < amount) revert Errors.InsufficientLiquidity();
+        uint256 available = availableLiquidity();
+        if (available < amount) revert Errors.InsufficientLiquidity(available, amount);
 
         if (collateralAmount != 0) {
             token.safeTransferFrom(msg.sender, address(this), collateralAmount);
@@ -209,18 +251,19 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
         loan.principal = amount;
         loan.collateral = collateralAmount;
         loan.repaid = 0;
-        loan.start = uint64(block.timestamp);
-        loan.due = uint64(block.timestamp) + duration;
+        uint64 nowTs = uint64(block.timestamp);
+        loan.start = nowTs;
+        loan.due = nowTs + duration;
         loan.active = true;
 
         emit Borrowed(msg.sender, amount, collateralAmount, loan.due, originationFee);
     }
 
     function repay(uint256 amount) external whenNotPaused nonReentrant {
-        if (amount == 0) revert Errors.InvalidAmount();
+        if (amount == 0) revert Errors.InvalidAmount(amount);
 
         Loan storage loan = loanOf[msg.sender];
-        if (!loan.active) revert Errors.LoanNotActive();
+        if (!loan.active) revert Errors.LoanNotActive(msg.sender);
 
         token.safeTransferFrom(msg.sender, address(this), amount);
         loan.repaid += amount;
@@ -260,8 +303,10 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
 
     function markDefault(address borrower) external whenNotPaused nonReentrant {
         Loan storage loan = loanOf[borrower];
-        if (!loan.active) revert Errors.LoanNotActive();
-        if (block.timestamp <= loan.due) revert Errors.NotPastDue();
+        if (!loan.active) revert Errors.LoanNotActive(borrower);
+        if (block.timestamp <= (uint256(loan.due) + gracePeriod)) {
+            revert Errors.NotPastDue(loan.due, gracePeriod, uint64(block.timestamp));
+        }
 
         loan.active = false;
 
@@ -293,11 +338,12 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     }
 
     function _increaseScore(address borrower) internal {
+        uint16 cap = scoreFree;
         uint16 s = scoreSbt.scoreOf(borrower);
-        if (s >= SCORE_FREE) return;
+        if (s >= cap) return;
 
         uint256 next = uint256(s) + uint256(scoreIncrement);
-        if (next > SCORE_FREE) next = SCORE_FREE;
+        if (next > cap) next = cap;
 
         scoreSbt.setScore(borrower, SafeCast.toUint16(next));
     }

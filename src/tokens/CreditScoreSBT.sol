@@ -47,7 +47,7 @@ contract CreditScoreSBT is ICreditScoreSBT, ERC721, Ownable {
 
     /// @inheritdoc ICreditScoreSBT
     function mintIfNeeded(address user) public override onlyOwner returns (uint256 tokenId) {
-        if (user == address(0)) revert Errors.InvalidAddress();
+        if (user == address(0)) revert Errors.InvalidAddress(user);
 
         tokenId = _tokenIdOf[user];
         if (tokenId != 0) return tokenId;

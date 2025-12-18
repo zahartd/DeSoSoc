@@ -54,10 +54,6 @@ contract BlackBadgeSBT is IBlackBadgeSBT, ERC721, Ownable {
         return _tokenIdOf[user];
     }
 
-    // =========================================================================
-    // Soulbound: disable all transfers
-    // =========================================================================
-
     /// @dev Override to prevent transfers. Soulbound tokens cannot be transferred.
     function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
         address from = _ownerOf(tokenId);

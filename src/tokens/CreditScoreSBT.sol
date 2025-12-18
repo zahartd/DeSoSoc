@@ -68,10 +68,6 @@ contract CreditScoreSBT is ICreditScoreSBT, ERC721, Ownable {
         emit ScoreUpdated(user, newScore);
     }
 
-    // =========================================================================
-    // Soulbound: disable all transfers + approvals
-    // =========================================================================
-
     function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
         address from = _ownerOf(tokenId);
         if (from != address(0)) revert Errors.Unauthorized();

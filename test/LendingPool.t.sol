@@ -251,14 +251,34 @@ contract LendingPoolTest is Test {
         pool.borrow(100 ether, 150 ether, 73 hours);
     }
 
-    function test_ownerCanUpdateDurationBounds_and_scoreFree() public {
+    function test_ownerCanUpdateConfigInBatch() public {
         vm.warp(1_000);
 
         vm.prank(alice);
         vm.expectRevert();
-        pool.setDurationBounds(6 hours, 48 hours);
+        pool.setConfig(
+            1000, // scoreIncrement
+            1000,
+            100,
+            treasury,
+            50,
+            uint32(24 hours),
+            300, // scoreFree
+            6 hours,
+            48 hours
+        );
 
-        pool.setDurationBounds(6 hours, 48 hours);
+        pool.setConfig(
+            1000, // scoreIncrement
+            1000,
+            100,
+            treasury,
+            50,
+            uint32(24 hours),
+            300, // scoreFree
+            6 hours,
+            48 hours
+        );
         assertEq(pool.minDuration(), 6 hours);
         assertEq(pool.maxDuration(), 48 hours);
 
@@ -266,8 +286,6 @@ contract LendingPoolTest is Test {
         vm.expectPartialRevert(Errors.InvalidDuration.selector);
         pool.borrow(1 ether, 2 ether, 5 hours);
 
-        pool.setScoreIncrement(1000);
-        pool.setScoreFree(300);
         assertEq(pool.scoreFree(), 300);
 
         vm.prank(alice);

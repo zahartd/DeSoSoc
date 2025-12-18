@@ -26,6 +26,11 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     uint16 internal constant DEFAULT_SCORE_FREE = 800;
     uint64 internal constant DEFAULT_MIN_DURATION = 4 hours;
     uint64 internal constant DEFAULT_MAX_DURATION = 72 hours;
+    uint16 internal constant DEFAULT_SCORE_INCREMENT = 250;
+    uint16 internal constant DEFAULT_PROTOCOL_FEE_BPS = 1000; // 10% of interest
+    uint16 internal constant DEFAULT_ORIGINATION_FEE_BPS = 100; // 1% of principal
+    uint16 internal constant DEFAULT_DEFAULT_BOUNTY_BPS = 50; // 0.5% of collateral to incentivize keepers
+    uint32 internal constant DEFAULT_GRACE_PERIOD = 24 hours;
 
     IERC20 public token;
     IRiskEngine public riskEngine;
@@ -85,6 +90,17 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
     event DefaultBountyPaid(address indexed borrower, address indexed caller, uint256 bounty);
     event DurationBoundsUpdated(uint64 minDuration, uint64 maxDuration);
     event ScoreFreeUpdated(uint16 scoreFree);
+    event ConfigUpdated(
+        uint16 scoreIncrement,
+        uint16 protocolFeeBps,
+        uint16 originationFeeBps,
+        address treasury,
+        uint16 defaultBountyBps,
+        uint32 gracePeriod,
+        uint16 scoreFree,
+        uint64 minDuration,
+        uint64 maxDuration
+    );
 
     constructor() {
         _disableInitializers();
@@ -115,14 +131,13 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
         scoreSbt = ICreditScoreSBT(scoreSbt_);
         badgeSbt = IBlackBadgeSBT(badgeSbt_);
         interestModel = IInterestModel(interestModel_);
-
-        scoreIncrement = 250;
         treasury = treasury_;
 
-        protocolFeeBps = 1000; // 10% of interest
-        originationFeeBps = 100; // 1% of principal
-        defaultBountyBps = 50; // 0.5% of collateral to incentivize keepers
-        gracePeriod = 24 hours;
+        scoreIncrement = DEFAULT_SCORE_INCREMENT;
+        protocolFeeBps = DEFAULT_PROTOCOL_FEE_BPS;
+        originationFeeBps = DEFAULT_ORIGINATION_FEE_BPS;
+        defaultBountyBps = DEFAULT_DEFAULT_BOUNTY_BPS;
+        gracePeriod = DEFAULT_GRACE_PERIOD;
         scoreFree = DEFAULT_SCORE_FREE;
         minDuration = DEFAULT_MIN_DURATION;
         maxDuration = DEFAULT_MAX_DURATION;
@@ -149,6 +164,49 @@ contract LendingPool is Initializable, UUPSUpgradeable, OwnableUpgradeable, Paus
 
     function setScoreIncrement(uint16 newScoreIncrement) external onlyOwner {
         scoreIncrement = newScoreIncrement;
+    }
+
+    function setConfig(
+        uint16 newScoreIncrement,
+        uint16 newProtocolFeeBps,
+        uint16 newOriginationFeeBps,
+        address newTreasury,
+        uint16 newDefaultBountyBps,
+        uint32 newGracePeriod,
+        uint16 newScoreFree,
+        uint64 newMinDuration,
+        uint64 newMaxDuration
+    ) external onlyOwner {
+        if (newProtocolFeeBps > BPS) revert Errors.InvalidBps(newProtocolFeeBps, BPS);
+        if (newOriginationFeeBps > BPS) revert Errors.InvalidBps(newOriginationFeeBps, BPS);
+        if (newDefaultBountyBps > BPS) revert Errors.InvalidBps(newDefaultBountyBps, BPS);
+        if (newTreasury == address(0)) revert Errors.InvalidAddress(newTreasury);
+        if (newScoreFree == 0) revert Errors.InvalidScoreFree(newScoreFree);
+        if (newMinDuration == 0 || newMinDuration > newMaxDuration) {
+            revert Errors.InvalidDurationBounds(newMinDuration, newMaxDuration);
+        }
+
+        scoreIncrement = newScoreIncrement;
+        protocolFeeBps = newProtocolFeeBps;
+        originationFeeBps = newOriginationFeeBps;
+        treasury = newTreasury;
+        defaultBountyBps = newDefaultBountyBps;
+        gracePeriod = newGracePeriod;
+        scoreFree = newScoreFree;
+        minDuration = newMinDuration;
+        maxDuration = newMaxDuration;
+
+        emit ConfigUpdated(
+            newScoreIncrement,
+            newProtocolFeeBps,
+            newOriginationFeeBps,
+            newTreasury,
+            newDefaultBountyBps,
+            newGracePeriod,
+            newScoreFree,
+            newMinDuration,
+            newMaxDuration
+        );
     }
 
     function setFees(uint16 newProtocolFeeBps, uint16 newOriginationFeeBps, address newTreasury) external onlyOwner {

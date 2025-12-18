@@ -1,92 +1,44 @@
+# HOW TO (Foundry)
+
+## Setup
+```bash
 forge install
 forge remappings > remappings.txt
+```
 
-forge build
+## Format / Build / Test
+```bash
 forge fmt
+forge build
 forge test -vvv
+```
 
-forge clean && forge build
+Если среда без сети/доступ к RPC ограничен, можно запускать с `--offline`:
+```bash
+forge build --offline
+forge test -vvv --offline
+```
 
-Local smoke-test (Anvil)
-Start local chain
+## Local smoke (Anvil)
+Запуск локальной сети:
+```bash
 anvil
-
-Deploy example contract (Counter)
 export RPC_URL=http://127.0.0.1:8545
 export PRIVATE_KEY=0x<ANVIL_PRIVATE_KEY>
+```
 
-forge create src/Counter.sol:Counter \
-  --rpc-url $RPC_URL \
-  --private-key $PRIVATE_KEY \
-  --broadcast
+Дальше самый надёжный референс по деплою proxy‑сборки и порядку инициализации — это `test/LendingPool.t.sol`.
 
-  Set deployed address:
+Минимальная последовательность (вручную через `forge create` / `cast`) выглядит так:
+1) Деплой `ERC20Mock` (актив пула и одновременно collateral в v0).
+2) Деплой `CreditScoreSBT` и `BlackBadgeSBT` (constructor принимает `initialOwner`).
+3) Деплой `RiskEngine` и `InterestModelLinear`.
+4) Деплой `LendingPool` (implementation).
+5) Деплой `ERC1967Proxy` с `initData = abi.encodeCall(LendingPool.initialize, ...)`.
+6) Передать ownership SBT → `LendingPool` proxy, чтобы core мог mint/update score/badge.
+7) Mint/approve `token`, `depositLiquidity`, дальше `borrow/repay`.
 
-export COUNTER_ADDR=0x<DEPLOYED_TO>
-
-
-Read / write via cast:
-
-cast call $COUNTER_ADDR "number()(uint256)" --rpc-url $RPC_URL
-
-cast send $COUNTER_ADDR "increment()" \
-  --rpc-url $RPC_URL \
-  --private-key $PRIVATE_KEY
-
-cast call $COUNTER_ADDR "number()(uint256)" --rpc-url $RPC_URL
-
-5) Sepolia deploy + verify
-Create .env (DO NOT COMMIT)
-SEPOLIA_URL="https://<YOUR_SEPOLIA_RPC>"
-PRIVATE_KEY="0x<YOUR_TESTNET_PRIVATE_KEY>"
-ETHERSCAN_API_KEY="<YOUR_ETHERSCAN_API_KEY>"
-
-
-Load env:
-
-source .env
-
-Deploy (forge create)
-forge create src/Counter.sol:Counter \
-  --rpc-url $SEPOLIA_URL \
-  --private-key $PRIVATE_KEY \
-  --broadcast
-
-
-Set address:
-
-export COUNTER_ADDR=0x<DEPLOYED_TO>
-
-
-Check it works:
-
-cast call $COUNTER_ADDR "number()(uint256)" --rpc-url $SEPOLIA_URL
-cast send $COUNTER_ADDR "increment()" --rpc-url $SEPOLIA_URL --private-key $PRIVATE_KEY
-cast call $COUNTER_ADDR "number()(uint256)" --rpc-url $SEPOLIA_URL
-
-Verify on Etherscan (to get Read/Write Contract in browser)
-Option A: deploy + verify (preferred for new deploys)
-forge create src/Counter.sol:Counter \
-  --rpc-url $SEPOLIA_URL \
-  --private-key $PRIVATE_KEY \
-  --broadcast \
-  --verify \
-  --verifier etherscan \
-  --etherscan-api-key $ETHERSCAN_API_KEY
-
-Option B: verify already deployed contract
-forge verify-contract --watch --chain sepolia \
-  $COUNTER_ADDR \
-  src/Counter.sol:Counter \
-  --verifier etherscan \
-  --etherscan-api-key $ETHERSCAN_API_KEY
-
-
-After verification:
-
-open the contract address on Sepolia Etherscan
-
-Contract → Read Contract / Write Contract
-
-Write Contract → Connect to Web3 (MetaMask in Sepolia)
-
+## Notes (v0 assumptions)
+- Один активный займ на заёмщика (`loanOf[borrower]`).
+- Один ERC20 `token` используется и для займа, и для залога.
+- Нет оракула/identity/hook’ов — это осознанное упрощение v0.

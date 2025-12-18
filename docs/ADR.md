@@ -1,78 +1,110 @@
-# Undercollateralized Lending v0 (Architecture Decision Record)
+# Undercollateralized Lending v0
 
-## Примечание по текущей реализации
-В репозитории сохранена общая архитектурная идея (core + модули + proxy), но код намеренно упрощён:
-- `PriceOracle`, `IdentityVerifier` и hook’и убраны (без оракула/пруфов/хуков)
-- `InterestModel` и комиссии оставлены в упрощённом виде (пример: `InterestModelLinear`)
-- RBAC на ролях заменён на `Ownable` ради лаконичности (роли можно вернуть позже)
+## Контекст
+Это учебный прототип under/over‑collateralized lending, где требования к залогу снижаются по мере роста репутации (credit score), а дефолтеры получают “чёрную метку”.
 
-## Контекст и цель
-Мы делаем учебный прототип lending-протокола, который:
-- стартует с **overcollateralized** займов;
-- затем, по мере накопления репутации, снижает требования к залогу вплоть до **undercollateralized / zero-collateral**;
-- хранит репутацию через **SBT** (Soulbound Tokens);
-- использует модульные политики (risk / interest / oracle / identity), чтобы легко добавлять новые метрики, оракулы и ZK-верификацию.
+В репозитории сохранена общая архитектурная идея (core + модули + proxy), но текущий код намеренно упрощён:
+- оракулы/верификаторы/хуки (price/identity/reputation hook) не реализованы;
+- вместо RBAC/ролей используется `Ownable` (1 админ);
+- используется один ERC20 `token` и для займа, и для залога;
+- один активный займ на заёмщика (`loanOf[borrower]`).
 
-## Решение v0 (ключевые решения)
-### 1) Модульная архитектура (Policy Layer)
-**Core (LendingPool)** отвечает только за жизненный цикл займа и хранение state.
+## Цель v0
+- Зафиксировать минимальный core + ABI/точки расширения.
+- Показать “money-flow” и lifecycle займа (borrow/repay/default) без усложнения бизнес‑логики.
+- Подготовить основу под подключение дополнительных политик (оракул, identity/ZK, хуки) в следующих версиях.
 
-Вся “логика политики” вынесена в модули по интерфейсам:
-- `IRiskEngine` — требования по залогу / лимитам / проверка допуска к займу
-- `IInterestModel` — расчет долга во времени (APR/penalty/прочее)
-- `IPriceOracle` — (опционально) цены залога/долга
-- `IIdentityVerifier` — (опционально) KYC/ZK/anti-sybil (верификация proof)
+## Ключевые решения
 
-**Почему:** позволяет расширять систему (oracle/ZK/новые метрики) заменой модулей без переписывания Core.
+### 1) Core тонкий, политика — в модулях
+Core (`src/core/LendingPool.sol`) отвечает за:
+- хранение займа и учёт залога (`lockedCollateral`);
+- перемещение средств (deposit/withdraw/borrow/repay);
+- начисление комиссий и базовые проверки;
+- вызов модулей политики.
 
-### 2) Репутация через SBT
-Мы используем два SBT:
-1) **CreditScoreSBT** — 1 токен на адрес; хранит/экспортирует `score`.
-   - Mint один раз
-   - Score обновляется протоколом (или уполномоченным модулем)
-2) **DefaultBadgeSBT** — “чёрная метка” для дефолтера (1 токен на адрес)
-   - Mint при дефолте
-   - По v0: не снимается (в будущем можно добавить амнистию/выкуп как отдельную политику)
+Модули политики подключаются по интерфейсам:
+- `IRiskEngine` — требования к залогу/лимитам и блок дефолтеров (`collateralRatioBps/maxBorrow/isDefaulter`);
+- `IInterestModel` — расчёт долга во времени (`debt/debtWithPenalty`).
 
-**SBT-совместимость:** реализуем non-transferable ERC-721 + (опционально) интерфейс **EIP-5192** “Minimal Soulbound NFTs” (`locked(tokenId)` + событие `Locked`). EIP-5192 описывает минимальный интерфейс soulbound NFT как расширение ERC-721. https://eips.ethereum.org/EIPS/eip-5192
+Текущее “дефолтное” наполнение:
+- `src/modules/RiskEngine.sol` — скоринг → collateral ratio + запрет дефолтерам;
+- `src/modules/InterestModelLinear.sol` — линейный APR + penalty APR.
 
-### 3) Upgradeability
-Core (`LendingPool`) делаем **upgradeable через proxy** (выбран UUPS), потому что:
-- хотим показывать best practices proxy-pattern;
-- хотим иметь возможность менять storage/flow, если потребуется.
+### 2) Репутация через SBT (soulbound ERC‑721)
+Используем два SBT:
+- `src/tokens/CreditScoreSBT.sol` — хранит `score` (uint16), один токен на адрес, обновляется протоколом;
+- `src/tokens/BlackBadgeSBT.sol` — “чёрная метка” дефолтера (один токен на адрес), mint при дефолте.
 
-Правила для upgradeable-контрактов:
-- **нет конструкторов**, вместо них **initializer**;
-- важно соблюдать ограничения upgradeable-контрактов и storage layout;
-- рекомендуется защищать имплементацию от повторной инициализации (например `_disableInitializers()` в имплементации).
+Soulbound‑поведение реализовано практично для v0: трансферы и approvals отключены (revert).
+EIP‑5192 не реализован (можно добавить позже отдельно, если понадобится совместимость).
 
-### 4) Access Control (RBAC)
-Используем `AccessControlUpgradeable` и роли:
-- `DEFAULT_ADMIN_ROLE` — выдача ролей
-- `UPGRADER_ROLE` — апгрейды (в `_authorizeUpgrade`)
-- `RISK_ADMIN_ROLE` — смена RiskEngine/настройки шкал
-- `TREASURY_ROLE` — управление источниками ликвидности (если будет нужно)
-- `PAUSER_ROLE` — аварийная пауза (опционально)
+Важно: SBT принадлежат `LendingPool` (через `transferOwnership` после деплоя), чтобы core мог mint/update.
 
-В текущей реализации v0 вместо ролей используется `Ownable` (1 админ) ради простоты.
+### 3) Money-flow v0 (что реально происходит на балансе)
+Роли в v0 упрощены: админ = owner.
 
-### 5) Минимальный протокольный flow (MVP)
-- Пользователь **без репутации** берёт займ только с высоким collateral ratio (например 150%)
-- После 1..N успешных погашений `score` растёт -> `IRiskEngine` снижает требование по залогу
-- При достижении порога -> допускаем undercollateralized или zero-collateral
-- При дефолте:
-  - mint `DefaultBadgeSBT`
-  - `IRiskEngine` запрещает будущие займы (или переводит в самый строгий режим)
+**Ликвидность**
+- `depositLiquidity(amount)` — owner кладёт `token` в пул.
+- `withdrawLiquidity(amount,to)` — owner может вывести только “свободную” ликвидность: `availableLiquidity() = balance - lockedCollateral`.
+
+**Borrow**
+- `borrow(amount, collateralAmount, duration)`:
+  - ограничение на `duration`: `[minDuration, maxDuration]` (по умолчанию 4h..72h);
+  - проверка лимита `riskEngine.maxBorrow(borrower)` и требований по залогу `riskEngine.collateralRatioBps(borrower)`;
+  - залог переводится в пул и учитывается в `lockedCollateral`;
+  - из `amount` удерживается `originationFeeBps` и отправляется в `treasury`;
+  - заёмщик получает `amount - originationFee`.
+
+**Repay**
+- `repay(amount)`:
+  - платеж поступает в пул (transferFrom);
+  - если суммарно `repaid >= totalDebt`, займ закрывается, залог возвращается заёмщику;
+  - с процентов берётся `protocolFeeBps` в `treasury`;
+  - `CreditScoreSBT` увеличивается на `scoreIncrement` с капом `scoreFree`.
+
+**Default**
+- `markDefault(borrower)`:
+  - callable любым (keeper‑модель);
+  - разрешено только после `due + gracePeriod` (по умолчанию 24h);
+  - займ закрывается, залог остаётся в пуле;
+  - вызывающему платится `defaultBountyBps` от залога (стимул вызывать);
+  - дефолтеру mint `BlackBadgeSBT`.
+
+### 4) Конфиги и “админка”
+Конфиги храним как storage‑поля с дефолтами и возможностью менять:
+- `minDuration/maxDuration`
+- `gracePeriod`
+- `scoreFree/scoreIncrement`
+- `protocolFeeBps/originationFeeBps`
+- `defaultBountyBps`
+- `treasury`
+
+Есть батч‑обновление `setConfig(...)` + точечные сеттеры для совместимости/простоты.
+
+### 5) Upgradeability (UUPS)
+`LendingPool` разворачивается как UUPS‑upgradeable:
+- логика в имплементации, state в proxy (`ERC1967Proxy`);
+- имплементация защищена от повторной инициализации (`_disableInitializers()` в конструкторе);
+- апгрейды разрешены только owner (`_authorizeUpgrade`).
+
+## Ограничения/не‑цели v0 (важно для ожиданий)
+- Нет оракулов и multi‑asset: один ERC20 `token`.
+- Нет ликвидаций/аукционов/AMM‑продажи залога: дефолт просто удерживает collateral в пуле.
+- Учёт `lockedCollateral` предполагает “обычный” ERC20 без rebasing/fee‑on‑transfer; иначе возможны рассинхронизации и DoS‑эффекты на `availableLiquidity()`.
 
 ## Диаграмма (v0)
 ```mermaid
 flowchart LR
-  User((Borrower / Lender)) -->|deposit, borrow, repay| Pool[LendingPool<br/>Proxy + Impl]
+  User((Borrower)) -->|borrow, repay| Pool[LendingPool<br/>Proxy + Impl]
+  Owner((Owner/Operator)) -->|deposit, withdraw, config| Pool
+
   Pool --> Risk[IRiskEngine]
   Pool --> Interest[IInterestModel]
+
   Risk --> Score[CreditScoreSBT]
-  Risk --> Badge[DefaultBadgeSBT]
-  Risk -. optional .-> Oracle[IPriceOracle]
-  Risk -. optional .-> ID[IIdentityVerifier<br/>ZK or KYC]
-  Pool -->|mint / update| Score
-  Pool -->|mint| Badge
+  Risk --> Badge[BlackBadgeSBT]
+
+  Pool -->|setScore| Score
+  Pool -->|mintBadge| Badge
+```
